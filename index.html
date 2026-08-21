@@ -311,7 +311,8 @@ function updateTimer(){
   timer.textContent = `${minutes}:${seconds}`;
 }
 
-/* ===== 과일·채소 유창성 음성인식 ===== */
+/* ===== 과일·채소 유창성 음성인식 =====
+   2026-08-21: Android continuous 유지 + 즉시 재연결 + 한글자 provisional + phrase bias ===== */
 let fluencyRecognition = null;
 let fluencyListening = false;
 let fluencyWords = new Set();
@@ -326,6 +327,8 @@ let fluencyRestartTimer = null;
 let fluencyStopping = false;
 let fluencyRestartFailures = 0;
 let fluencyRecognitionInput = 'browser-mic';
+let fluencyProvisionalWords = new Set();
+let fluencyPhraseBiasDisabled = false;
 
 function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -483,7 +486,7 @@ function renderFluencyWords(){
 }
 
 function syncFluencyWords(){
-  fluencyWords = new Set([...fluencyAutoWords, ...fluencyManualWords]);
+  fluencyWords = new Set([...fluencyAutoWords, ...fluencyProvisionalWords, ...fluencyManualWords]);
   renderFluencyWords();
 }
 
@@ -637,6 +640,7 @@ function commitUsefulFluencyInterim(){
 
   fluencyFinalText = (fluencyFinalText + ' ' + pending).replace(/\s+/g,' ').trim();
   fluencyInterimText = '';
+  fluencyProvisionalWords = new Set();
   rebuildAutoFluencyWords();
 
   const raw = $('fluencyRawText');
@@ -651,20 +655,71 @@ function setFluencyLive(text, state){
   if(mic) mic.textContent = state;
 }
 
+
+function getSingleSyllableFluencyWords(){
+  return FLUENCY_TERMS
+    .map(t=>t.word)
+    .filter(w=>normalizeFluencyText(w).replace(/\s+/g,'').length===1);
+}
+
+function updateProvisionalShortWords(text){
+  const normalized = normalizeFluencyText(text);
+  const compact = normalized.replace(/\s+/g,'');
+  const next = new Set();
+
+  // 한 글자 과일·채소는 발화 전체가 그 단어 하나로 들렸을 때 즉시 임시 저장합니다.
+  // Android Chrome이 final 결과를 주기 전에 세션을 끝내도 화면/개수에서 사라지지 않게 합니다.
+  for(const word of getSingleSyllableFluencyWords()){
+    if(compact === word) next.add(word);
+  }
+  // '무'를 '뭐'로 받아쓰는 흔한 경우만 단독 발화일 때 보정합니다.
+  if(compact === '뭐' || compact === '무우') next.add('무');
+
+  fluencyProvisionalWords = next;
+  syncFluencyWords();
+  return next;
+}
+
+function clearProvisionalShortWords(){
+  if(fluencyProvisionalWords.size){
+    fluencyProvisionalWords = new Set();
+    syncFluencyWords();
+  }
+}
+
+function applyFluencyPhraseBias(recognition){
+  if(fluencyPhraseBiasDisabled || !recognition) return false;
+  try{
+    const Phrase = window.SpeechRecognitionPhrase || window.webkitSpeechRecognitionPhrase;
+    if(!Phrase || !('phrases' in recognition)) return false;
+    const phraseObjects = FLUENCY_TERMS.map(term => {
+      const compactLen = normalizeFluencyText(term.word).replace(/\s+/g,'').length;
+      // 한 글자 단어는 조금 더 강하게, 나머지는 중간 정도로 가중합니다.
+      const boost = compactLen === 1 ? 6.0 : (compactLen <= 2 ? 4.8 : 4.0);
+      return new Phrase(term.word, boost);
+    });
+    recognition.phrases = phraseObjects;
+    recognition.__phrasesEnabled = true;
+    return true;
+  }catch(_){
+    return false;
+  }
+}
+
 function createFluencyRecognition(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR) return null;
   const r = new SR();
   r.lang = 'ko-KR';
 
-  // Android Chrome은 continuous=true라도 침묵 후 세션을 종료합니다.
-  // 이 앱은 그 종료를 정상적인 "짧은 청취 구간 종료"로 보고 새 세션을 계속
-  // 시작합니다. 시스템 시작음이 날 수 있지만, 1분 동안 듣기가 끊기지 않는 것을
-  // 우선합니다. Android 이외에서는 가능한 경우 continuous 모드를 유지합니다.
-  r.continuous = !isAndroidChrome();
+  // Android에서도 continuous=true를 유지합니다.
+  // false로 두면 한 번의 최종 발화마다 세션이 끝나 재시작음(띵)이 훨씬 자주 납니다.
+  // continuous=true여도 긴 침묵 뒤 Chrome이 세션을 종료할 수 있으므로 onend에서만 재연결합니다.
+  r.continuous = true;
   r.interimResults = true;
   r.maxAlternatives = 5;
   r.__fatalError = false;
+  applyFluencyPhraseBias(r);
 
   r.onstart = () => {
     if(fluencyRecognition !== r || fluencyStopping) return;
@@ -705,6 +760,7 @@ function createFluencyRecognition(){
     }
 
     if(finalText){
+      clearProvisionalShortWords();
       fluencyFinalText = (fluencyFinalText + ' ' + finalText).replace(/\s+/g,' ').trim();
       // 누적 원문 전체를 다시 분석하므로
       //   콩 + 나물 -> 콩나물
@@ -715,6 +771,8 @@ function createFluencyRecognition(){
     }
 
     fluencyInterimText = interim.trim();
+    if(fluencyInterimText) updateProvisionalShortWords(fluencyInterimText);
+    else if(!finalText) clearProvisionalShortWords();
     const previewText = [fluencyFinalText, fluencyInterimText].filter(Boolean).join(' ');
     const preview = analyzeFluencyTranscript(previewText);
 
@@ -743,8 +801,14 @@ function createFluencyRecognition(){
       'no-speech':'잠시 말씀이 없어 청취 구간이 끝났습니다. 자동으로 다시 듣습니다.',
       'audio-capture':'마이크를 사용할 수 없습니다. 다른 녹음/통화 앱을 종료해 주세요.',
       'language-not-supported':'한국어 음성인식을 지원하지 않습니다.',
-      'aborted':'음성인식이 잠시 중단되었습니다. 자동으로 다시 연결합니다.'
+      'aborted':'음성인식이 잠시 중단되었습니다. 자동으로 다시 연결합니다.',
+      'phrases-not-supported':'이 기기에서는 단어 우선 힌트를 지원하지 않습니다. 일반 음성인식으로 계속합니다.'
     };
+
+    if(code === 'phrases-not-supported'){
+      fluencyPhraseBiasDisabled = true;
+      r.__fatalError = false;
+    }
 
     // 권한/장치/언어 오류만 자동 재시작을 멈춥니다.
     r.__fatalError = ['not-allowed','service-not-allowed','audio-capture','language-not-supported'].includes(code);
@@ -772,7 +836,7 @@ function createFluencyRecognition(){
       fluencyRestartTimer = setTimeout(() => {
         fluencyRestartTimer = null;
         restartFluencyRecognitionAfterSilence();
-      }, 220);
+      }, 0);
     } else if(!timerInterval || timerSeconds <= 0){
       setFluencyLive('음성인식이 종료되었습니다.', '⏹ 종료');
     }
@@ -813,7 +877,7 @@ function startFluencyRecognition(){
   const ok = !!r && startRecognitionInstance(r);
   if(!ok){
     setFluencyLive('음성인식 시작에 실패했습니다. 자동으로 다시 시도합니다.', '🟡 재연결 중');
-    fluencyRestartTimer = setTimeout(restartFluencyRecognitionAfterSilence, 600);
+    fluencyRestartTimer = setTimeout(restartFluencyRecognitionAfterSilence, 80);
   }
   return true;
 }
@@ -838,7 +902,7 @@ function restartFluencyRecognitionAfterSilence(){
   }
 
   fluencyRestartFailures++;
-  const delay = Math.min(1600, 350 + fluencyRestartFailures * 150);
+  const delay = Math.min(900, 80 + fluencyRestartFailures * 100);
   clearTimeout(fluencyRestartTimer);
   fluencyRestartTimer = setTimeout(restartFluencyRecognitionAfterSilence, delay);
   setFluencyLive('🎤 음성인식을 다시 연결하는 중입니다. 잠시 후 자동으로 계속 듣습니다.', '🟡 재연결 중');
@@ -873,6 +937,7 @@ function resetFluencyData(){
   fluencyWords = new Set();
   fluencyAutoWords = new Set();
   fluencyManualWords = new Set();
+  fluencyProvisionalWords = new Set();
   fluencyFinalText = '';
   fluencyInterimText = '';
   const reconnectBtn = $('fluencyReconnectBtn');
