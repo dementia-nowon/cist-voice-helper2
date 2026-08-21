@@ -73,6 +73,17 @@
 .fluency-manual{display:flex;gap:8px;margin-top:12px}
 .fluency-manual input{flex:1;min-width:0;border:1px solid #cfe0dd;border-radius:13px;padding:12px;font-size:17px}
 .fluency-error{color:#a33;font-weight:800}
+.fluency-raw{margin-top:12px;padding:14px 16px;border:1px solid #d7e6e3;border-radius:16px;background:#fbfdfd;color:var(--muted);font-size:16px;line-height:1.6;word-break:keep-all}
+.fluency-results{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.fluency-result-card{border:2px solid #cfe5e1;border-radius:18px;padding:16px;background:#f8fcfb}
+.fluency-result-card.wrong{border-color:#ead8d3;background:#fffafa}
+.fluency-result-title{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:18px;font-weight:950;margin-bottom:12px}
+.fluency-result-title strong{color:var(--p)}
+.fluency-result-card.wrong .fluency-result-title strong{color:#9b4938}
+.fluency-result-chips{display:flex;flex-wrap:wrap;gap:8px;min-height:42px;align-items:flex-start}
+.fluency-chip.wrong{background:#fff0ed;border-color:#e9c9c1;color:#793d31}
+.fluency-result-note{margin-top:8px;color:var(--muted);font-size:13px;line-height:1.45}
+@media(max-width:650px){.fluency-results{grid-template-columns:1fr}}
 
 </style>
 </head>
@@ -271,22 +282,34 @@ function render(autoSpeak=true){
       <div class="fluency-panel">
         <div class="fluency-status">
           <span class="mic-state" id="fluencyMicState">🎤 대기 중</span>
-          <span class="count">유효 단어 <span id="fluencyCount">0</span>개</span>
+          <span class="count" id="fluencyCollectStatus">결과는 1분 후 판정</span>
         </div>
-        <div class="fluency-live" id="fluencyLive">1분 시작을 누르면 어르신의 말씀을 인식합니다.</div>
-        <div class="fluency-words" id="fluencyWords"><span style="color:var(--muted)">인식된 과일·채소가 여기에 표시됩니다.</span></div>
+        <div class="fluency-live" id="fluencyLive">1분 시작을 누르면 어르신의 말씀을 모두 듣습니다.</div>
+        <div class="fluency-raw" id="fluencyRawText">📝 인식된 말: 아직 없습니다.</div>
+        <div class="fluency-results" id="fluencyResults" style="display:none">
+          <div class="fluency-result-card">
+            <div class="fluency-result-title"><span>✅ 정답 · 과일/채소</span><strong><span id="fluencyCorrectCount">0</span>개</strong></div>
+            <div class="fluency-result-chips" id="fluencyCorrectWords"><span style="color:var(--muted)">정답 없음</span></div>
+            <div class="fluency-result-note">같은 단어를 여러 번 말한 경우 점수는 한 번만 계산합니다.</div>
+          </div>
+          <div class="fluency-result-card wrong">
+            <div class="fluency-result-title"><span>❌ 오답 / 기타 응답</span><strong><span id="fluencyWrongCount">0</span>개</strong></div>
+            <div class="fluency-result-chips" id="fluencyWrongWords"><span style="color:var(--muted)">오답 없음</span></div>
+            <div class="fluency-result-note">음성인식 결과 중 과일·채소로 분류되지 않은 의미 있는 단어를 표시합니다.</div>
+          </div>
+        </div>
         <div class="fluency-controls">
           <button class="primary" onclick="startTimer()">🎤 1분 시작</button>
-          <button class="secondary" onclick="stopTimer()">정지</button>
+          <button class="secondary" onclick="finishFluencyTest(false)">정지·결과보기</button>
           <button class="secondary" onclick="resetTimer()">초기화</button>
-        <button class="secondary" id="fluencyReconnectBtn" onclick="reconnectFluencyRecognition()" style="display:none">🎤 음성인식 다시 연결</button>
+          <button class="secondary" id="fluencyReconnectBtn" onclick="reconnectFluencyRecognition()" style="display:none">🎤 음성인식 다시 연결</button>
           <button class="secondary" onclick="testFluencyMicrophone()">🎤 마이크 테스트</button>
         </div>
-        <div class="fluency-manual">
-          <input id="fluencyManualInput" type="text" placeholder="인식되지 않은 단어 직접 추가" onkeydown="if(event.key==='Enter') addManualFluencyWord()">
-          <button class="secondary" onclick="addManualFluencyWord()">+ 추가</button>
+        <div class="fluency-manual" id="fluencyManualWrap" style="display:none">
+          <input id="fluencyManualInput" type="text" placeholder="정답으로 누락된 과일·채소를 검사자가 추가" onkeydown="if(event.key==='Enter') addManualFluencyWord()">
+          <button class="secondary" onclick="addManualFluencyWord()">+ 정답 보정</button>
         </div>
-        <div class="fluency-help">갤럭시탭에서는 <b>Chrome 최신 버전 + GitHub Pages HTTPS 주소</b>로 접속하세요. 「1분 시작」을 누르면 마이크 권한을 자동으로 요청하고 1분 동안 마이크 연결을 유지합니다. 잠시 말씀이 없어도 자동으로 듣기를 이어갑니다. 복합 단어는 긴 단어를 우선해 중복 계산하지 않습니다. 음성인식 원문도 함께 표시되며, 기기 인식이 틀린 경우 검사자가 실제 발화를 듣고 직접 추가할 수 있습니다.</div>
+        <div class="fluency-help">검사 중에는 정답/오답을 바로 판정하지 않습니다. <b>1분 동안 들은 내용을 모두 모은 뒤 종료 시 한꺼번에 분류</b>합니다. 갤럭시탭·Android 휴대폰에서는 Chrome 최신 버전과 GitHub Pages HTTPS 주소를 사용하세요. 침묵으로 음성인식 세션이 끝나면 1분 동안 자동으로 다시 연결됩니다.</div>
       </div>`;
   } else {
     $('content').innerHTML = `<div class="figure-note">${page.display}</div>`;
@@ -329,6 +352,8 @@ let fluencyRestartFailures = 0;
 let fluencyRecognitionInput = 'browser-mic';
 let fluencyProvisionalWords = new Set();
 let fluencyPhraseBiasDisabled = false;
+let fluencyWrongWords = [];
+let fluencyResultReady = false;
 
 function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -474,15 +499,9 @@ function escapeRegExp(value){
 }
 
 function renderFluencyWords(){
-  const box = $('fluencyWords');
-  const count = $('fluencyCount');
-  if(!box || !count) return;
-  count.textContent = fluencyWords.size;
-  if(!fluencyWords.size){
-    box.innerHTML = '<span style="color:var(--muted)">인식된 과일·채소가 여기에 표시됩니다.</span>';
-    return;
-  }
-  box.innerHTML = [...fluencyWords].map(w => `<span class="fluency-chip">${escapeHTML(w)}</span>`).join('');
+  // 검사 중에는 판정 결과를 표시하지 않습니다. 결과 화면은 finalizeFluencyResults()에서만 갱신합니다.
+  if(!fluencyResultReady) return;
+  renderFinalFluencyResults();
 }
 
 function syncFluencyWords(){
@@ -528,7 +547,7 @@ function analyzeFluencyTranscript(text){
   // '뭐가', '뭐예요' 같은 일반 문장에는 적용하지 않아 오검출을 막습니다.
   if(normalized === '뭐') normalized = '무';
 
-  if(!normalized) return {text:String(text||''), normalized:'', words:[], matchedChars:0};
+  if(!normalized) return {text:String(text||''), normalized:'', words:[], matches:[], matchedChars:0};
 
   const candidates = [];
   FLUENCY_TERMS.forEach((term, termIndex) => {
@@ -556,16 +575,13 @@ function analyzeFluencyTranscript(text){
 
   const occupied = new Array(normalized.length).fill(false);
   const selected = [];
-  const selectedWords = new Set();
-
   for(const c of candidates){
     let overlaps = false;
     for(let i=c.start; i<c.end; i++){
       if(occupied[i]){ overlaps = true; break; }
     }
-    if(overlaps || selectedWords.has(c.word)) continue;
+    if(overlaps) continue;
     for(let i=c.start; i<c.end; i++) occupied[i] = true;
-    selectedWords.add(c.word);
     selected.push(c);
   }
 
@@ -589,6 +605,7 @@ function analyzeFluencyTranscript(text){
     text:String(text || '').trim(),
     normalized,
     words:filtered.map(x=>x.word),
+    matches:filtered.map(x=>({word:x.word,start:x.start,end:x.end,matchLen:x.matchLen})),
     matchedChars:filtered.reduce((sum,x)=>sum+x.matchLen,0)
   };
 }
@@ -635,17 +652,19 @@ function commitUsefulFluencyInterim(){
   const pending = String(fluencyInterimText || '').trim();
   if(!pending) return false;
 
-  const analysis = analyzeFluencyTranscript(pending);
-  if(!analysis.words.length) return false;
-
+  // 1분 종료 전에는 정답/오답 판정을 하지 않고, 들린 원문만 보존합니다.
   fluencyFinalText = (fluencyFinalText + ' ' + pending).replace(/\s+/g,' ').trim();
   fluencyInterimText = '';
   fluencyProvisionalWords = new Set();
-  rebuildAutoFluencyWords();
-
-  const raw = $('fluencyRawText');
-  if(raw) raw.textContent = '📝 누적 음성인식 원문: ' + fluencyFinalText;
+  updateFluencyRawDisplay();
   return true;
+}
+
+function updateFluencyRawDisplay(){
+  const raw = $('fluencyRawText');
+  if(!raw) return;
+  const text = [fluencyFinalText, fluencyInterimText].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  raw.textContent = text ? ('📝 인식된 말: ' + text) : '📝 인식된 말: 아직 없습니다.';
 }
 
 function setFluencyLive(text, state){
@@ -706,6 +725,88 @@ function applyFluencyPhraseBias(recognition){
   }
 }
 
+const FLUENCY_IGNORED_WRONG_TOKENS = new Set([
+  '음','어','아','저','그','그냥','그리고','또','네','예','응','어어','아아','음음',
+  '글쎄','글쎄요','모르겠어','모르겠어요','몰라','몰라요','잠깐','잠깐만'
+]);
+
+function cleanFluencyWrongToken(token){
+  let t = normalizeFluencyText(token).replace(/\s+/g,'').trim();
+  if(!t) return '';
+
+  // 정답 단어 뒤에 붙은 흔한 조사만 남은 경우 오답으로 세지 않습니다.
+  const particles = ['으로','에서','에게','한테','까지','부터','처럼','보다','하고','이랑','랑','과','와','은','는','이','가','을','를','도','에','로','야','이야'];
+  if(particles.includes(t)) return '';
+  if(FLUENCY_IGNORED_WRONG_TOKENS.has(t)) return '';
+  if(/^([ㅎㅎㅋ]+|[0-9]+)$/.test(t)) return '';
+  return t;
+}
+
+function classifyFluencyTranscript(text){
+  const analysis = analyzeFluencyTranscript(text);
+  const normalized = analysis.normalized || '';
+  const consumed = new Array(normalized.length).fill(false);
+  (analysis.matches || []).forEach(m=>{
+    for(let i=m.start;i<m.end;i++) consumed[i]=true;
+  });
+
+  // 정답으로 매칭된 위치를 공백으로 지우고 남은 발화를 오답 후보로 분리합니다.
+  let residualExact = '';
+  for(let i=0;i<normalized.length;i++) residualExact += consumed[i] ? ' ' : normalized[i];
+
+  const wrong = residualExact
+    .split(/\s+/)
+    .map(cleanFluencyWrongToken)
+    .filter(Boolean);
+
+  const correctMentions = (analysis.matches || []).map(m=>m.word);
+  const correctUnique = [...new Set(correctMentions)];
+  const wrongUnique = [...new Set(wrong)];
+
+  return {
+    raw:String(text||'').trim(),
+    correctMentions,
+    correctUnique,
+    wrongMentions:wrong,
+    wrongUnique
+  };
+}
+
+function renderFinalFluencyResults(){
+  const results = $('fluencyResults');
+  if(!results) return;
+  const correct = [...new Set([...fluencyAutoWords, ...fluencyManualWords])];
+  const wrong = [...new Set(fluencyWrongWords)].filter(w=>!correct.includes(w));
+
+  const cc=$('fluencyCorrectCount');
+  const wc=$('fluencyWrongCount');
+  const cb=$('fluencyCorrectWords');
+  const wb=$('fluencyWrongWords');
+  if(cc) cc.textContent=correct.length;
+  if(wc) wc.textContent=wrong.length;
+  if(cb) cb.innerHTML = correct.length ? correct.map(w=>`<span class="fluency-chip">${escapeHTML(w)}</span>`).join('') : '<span style="color:var(--muted)">정답 없음</span>';
+  if(wb) wb.innerHTML = wrong.length ? wrong.map(w=>`<span class="fluency-chip wrong">${escapeHTML(w)}</span>`).join('') : '<span style="color:var(--muted)">오답 없음</span>';
+  results.style.display='grid';
+}
+
+function finalizeFluencyResults(){
+  // 종료 순간 final이 되지 못한 짧은 발화도 원문에 포함합니다.
+  commitUsefulFluencyInterim();
+  const classification = classifyFluencyTranscript(fluencyFinalText);
+  fluencyAutoWords = new Set(classification.correctUnique);
+  fluencyWords = new Set([...fluencyAutoWords, ...fluencyManualWords]);
+  fluencyWrongWords = classification.wrongUnique;
+  fluencyResultReady = true;
+  renderFinalFluencyResults();
+
+  const status=$('fluencyCollectStatus');
+  if(status) status.textContent = `정답 ${fluencyWords.size}개 · 오답/기타 ${fluencyWrongWords.length}개`;
+  const manual=$('fluencyManualWrap');
+  if(manual) manual.style.display='flex';
+  updateFluencyRawDisplay();
+  return classification;
+}
+
 function createFluencyRecognition(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR) return null;
@@ -738,55 +839,28 @@ function createFluencyRecognition(){
     for(let i=event.resultIndex; i<event.results.length; i++){
       const result = event.results[i];
       if(result.isFinal){
-        const chosen = chooseBestFluencyAlternative(result);
-        if(chosen.text) acceptedFinals.push(chosen.text);
+        // 정답을 많이 포함한 후보를 고르는 방식은 오답 발화를 왜곡할 수 있으므로
+        // 실제 음성인식의 1순위 결과를 그대로 수집합니다. 판정은 1분 종료 후에만 합니다.
+        const primary = String(result[0]?.transcript || '').trim();
+        if(primary) acceptedFinals.push(primary);
       } else {
-        // 중간 결과는 1순위 원문을 보관합니다. Android가 최종 결과에서
-        // '콩나물'을 '콩'처럼 잘라 확정할 때 복구하는 데 사용합니다.
         interim += (result[0]?.transcript || '') + ' ';
       }
     }
 
-    let finalText = acceptedFinals.join(' ').trim();
-    if(finalText && fluencyInterimText){
-      const prev = analyzeFluencyTranscript(fluencyInterimText);
-      const fin = analyzeFluencyTranscript(finalText);
-      const prevCompact = prev.normalized.replace(/\s+/g,'');
-      const finCompact = fin.normalized.replace(/\s+/g,'');
-      const isSafePrefixRescue = finCompact && prevCompact.startsWith(finCompact) &&
-        prevCompact.length > finCompact.length && prevCompact.length - finCompact.length <= 6 &&
-        prev.matchedChars > fin.matchedChars && prev.words.length >= fin.words.length;
-      if(isSafePrefixRescue) finalText = fluencyInterimText;
-    }
-
+    const finalText = acceptedFinals.join(' ').trim();
     if(finalText){
-      clearProvisionalShortWords();
       fluencyFinalText = (fluencyFinalText + ' ' + finalText).replace(/\s+/g,' ').trim();
-      // 누적 원문 전체를 다시 분석하므로
-      //   콩 + 나물 -> 콩나물
-      //   사과 + 배 -> 사과, 배
-      //   포도수박참외 -> 포도, 수박, 참외
-      // 처럼 발화가 세션 경계에서 잘려도 다시 합쳐 판정할 수 있습니다.
-      rebuildAutoFluencyWords();
     }
 
     fluencyInterimText = interim.trim();
-    if(fluencyInterimText) updateProvisionalShortWords(fluencyInterimText);
-    else if(!finalText) clearProvisionalShortWords();
-    const previewText = [fluencyFinalText, fluencyInterimText].filter(Boolean).join(' ');
-    const preview = analyzeFluencyTranscript(previewText);
+    updateFluencyRawDisplay();
 
     const live = $('fluencyLive');
     if(live){
-      if(fluencyInterimText){
-        live.textContent = '인식 중: ' + fluencyInterimText + (preview.words.length ? `  → ${preview.words.join(', ')}` : '');
-      } else if(finalText){
-        live.textContent = '최근 인식: ' + finalText;
-      }
-    }
-    const raw = $('fluencyRawText');
-    if(raw && (fluencyInterimText || finalText)){
-      raw.textContent = '📝 누적 음성인식 원문: ' + previewText;
+      if(fluencyInterimText) live.textContent = '듣는 중: ' + fluencyInterimText;
+      else if(finalText) live.textContent = '계속 듣고 있습니다. 최근 인식: ' + finalText;
+      else live.textContent = '🗣️ 계속 듣고 있습니다.';
     }
   };
 
@@ -938,14 +1012,22 @@ function resetFluencyData(){
   fluencyAutoWords = new Set();
   fluencyManualWords = new Set();
   fluencyProvisionalWords = new Set();
+  fluencyWrongWords = [];
+  fluencyResultReady = false;
   fluencyFinalText = '';
   fluencyInterimText = '';
   const reconnectBtn = $('fluencyReconnectBtn');
   if(reconnectBtn) reconnectBtn.style.display = 'none';
   const input = $('fluencyManualInput');
   if(input) input.value = '';
-  renderFluencyWords();
-  setFluencyLive('1분 시작을 누르면 어르신의 말씀을 인식합니다.', '🎤 대기 중');
+  const results=$('fluencyResults');
+  if(results) results.style.display='none';
+  const manual=$('fluencyManualWrap');
+  if(manual) manual.style.display='none';
+  const status=$('fluencyCollectStatus');
+  if(status) status.textContent='결과는 1분 후 판정';
+  updateFluencyRawDisplay();
+  setFluencyLive('1분 시작을 누르면 어르신의 말씀을 모두 듣습니다.', '🎤 대기 중');
 }
 
 function addManualFluencyWord(){
@@ -954,12 +1036,17 @@ function addManualFluencyWord(){
   const value = input.value.trim();
   if(!value) return;
 
-  // 직접 추가는 자동인식 재분석과 분리해 보존합니다.
-  value.split(/\s+/).forEach(w => {
-    if(w.length <= 20) fluencyManualWords.add(w);
-  });
+  // 검사 종료 후 음성인식에서 빠진 실제 정답만 보정합니다.
+  const analysis = analyzeFluencyTranscript(value);
+  const words = analysis.words.length ? analysis.words : value.split(/\s+/).filter(w=>FLUENCY_VOCAB_SET.has(w));
+  words.forEach(w=>fluencyManualWords.add(w));
   input.value = '';
-  syncFluencyWords();
+  fluencyWords = new Set([...fluencyAutoWords, ...fluencyManualWords]);
+  fluencyWrongWords = fluencyWrongWords.filter(w=>!fluencyWords.has(w));
+  fluencyResultReady = true;
+  renderFinalFluencyResults();
+  const status=$('fluencyCollectStatus');
+  if(status) status.textContent = `정답 ${fluencyWords.size}개 · 오답/기타 ${fluencyWrongWords.length}개`;
 }
 
 /* 기존 타이머에 음성인식을 연결 */
@@ -996,24 +1083,41 @@ async function startTimer(){
     timerSeconds--;
     updateTimer();
     if(timerSeconds<=0){
-      stopTimer();
-      setFluencyLive('1분 검사가 끝났습니다. 검사 결과를 확인해 주세요.', '✅ 검사 종료');
-      speakText('그만하세요. 1분이 끝났습니다.');
+      finishFluencyTest(true);
     }
   },1000);
 }
 
-function stopTimer(){
+function finishFluencyTest(announce=true){
+  if(!timerInterval && !fluencyListening && fluencyResultReady) return;
+  // recognition.abort()보다 먼저 pending interim을 저장하고 결과를 계산합니다.
+  commitUsefulFluencyInterim();
   if(timerInterval){
     clearInterval(timerInterval);
     timerInterval = null;
   }
   stopFluencyRecognition();
   stopFluencyMic();
+  finalizeFluencyResults();
+  setFluencyLive('✅ 검사가 끝났습니다. 아래에서 정답과 오답/기타 응답을 확인해 주세요.', '✅ 검사 종료');
+  if(announce) speakText('그만하세요. 1분이 끝났습니다.');
+}
+
+function stopTimer(){
+  // 다른 페이지 이동/음성 중지에서 호출될 수 있으므로, 진행 중인 유창성 검사는 결과까지 확정합니다.
+  if(timerInterval || fluencyListening){
+    finishFluencyTest(false);
+    return;
+  }
+  stopFluencyRecognition();
+  stopFluencyMic();
 }
 
 function resetTimer(){
-  stopTimer();
+  if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
+  fluencyStopping = true;
+  stopFluencyRecognition();
+  stopFluencyMic();
   timerSeconds = 60;
   updateTimer();
   resetFluencyData();
