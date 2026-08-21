@@ -374,7 +374,7 @@ function stopFluencyMic(){
 }
 
 async function testFluencyMicrophone(){
-  const ok = await requestFluencyMic();
+  const ok=await requestFluencyMic();
   if(ok){
     setFluencyLive('🟢 마이크 정상입니다. 이제 「1분 시작」을 눌러주세요.', '🟢 마이크 정상');
   }
@@ -558,37 +558,38 @@ function addManualFluencyWord(){
 
 /* 기존 타이머에 음성인식을 연결 */
 function startTimer(){
-  // If the microphone was already tested, do not await anything here.
-  // SpeechRecognition.start() is called directly from the user's tap.
-  stopVoice();
+  // Do not call stopVoice() here. On the timer page stopVoice() also
+  // stops the approved fluency microphone before the timer has started.
+  if('speechSynthesis' in window) speechSynthesis.cancel();
+
   if(timerInterval){
     clearInterval(timerInterval);
-    timerInterval = null;
+    timerInterval=null;
   }
 
-  if(!fluencyMicReady){
-    setFluencyLive('먼저 「🎤 마이크 테스트」를 눌러 마이크를 연결한 뒤 「1분 시작」을 눌러주세요.', '⚠️ 마이크 테스트 필요');
+  if(!fluencyMicReady || !fluencyMicStream){
+    setFluencyLive('먼저 「🎤 마이크 테스트」를 눌러 마이크를 연결해 주세요.', '⚠️ 마이크 테스트 필요');
     return;
   }
 
-  timerSeconds = 60;
+  timerSeconds=60;
   updateTimer();
   resetFluencyData();
 
-  const recognitionOK = startFluencyRecognition();
+  const recognitionOK=startFluencyRecognition();
   if(!recognitionOK){
-    setFluencyLive('마이크는 정상적으로 연결되었지만 웹 음성인식을 시작하지 못했습니다. 오류 상태를 확인해 주세요.', '⚠️ 음성인식 시작 실패');
+    setFluencyLive('마이크는 정상적으로 연결되었지만 웹 음성인식을 시작하지 못했습니다. 화면의 오류 상태를 확인해 주세요.', '⚠️ 음성인식 시작 실패');
   }
 
-  timerInterval = setInterval(() => {
+  timerInterval=setInterval(()=>{
     timerSeconds--;
     updateTimer();
-    if(timerSeconds <= 0){
+    if(timerSeconds<=0){
       stopTimer();
       setFluencyLive('1분 검사가 끝났습니다. 검사 결과를 확인해 주세요.', '✅ 검사 종료');
       speakText('그만하세요. 1분이 끝났습니다.');
     }
-  }, 1000);
+  },1000);
 }
 
 function stopTimer(){
