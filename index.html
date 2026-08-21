@@ -279,6 +279,7 @@ function render(autoSpeak=true){
           <button class="primary" onclick="startTimer()">🎤 1분 시작</button>
           <button class="secondary" onclick="stopTimer()">정지</button>
           <button class="secondary" onclick="resetTimer()">초기화</button>
+        <button class="secondary" id="fluencyReconnectBtn" onclick="reconnectFluencyRecognition()" style="display:none">🎤 음성인식 다시 연결</button>
           <button class="secondary" onclick="testFluencyMicrophone()">🎤 마이크 테스트</button>
         </div>
         <div class="fluency-manual">
@@ -617,6 +618,8 @@ function createFluencyRecognition(){
 
   r.onstart = () => {
     fluencyListening = true;
+    const reconnectBtn = $('fluencyReconnectBtn');
+    if(reconnectBtn) reconnectBtn.style.display = 'none';
     setFluencyLive('🗣️ 음성인식이 시작되었습니다. 과일이나 채소를 말씀해 주세요.', '🟢 듣는 중');
   };
 
@@ -692,16 +695,20 @@ function createFluencyRecognition(){
 
   r.onend = () => {
     fluencyListening = false;
+    // Android/Chrome의 Web Speech API는 인식 세션을 다시 start()할 때
+    // 시스템 마이크 시작음을 낼 수 있습니다. 1분 동안 반복되는 '띵' 소리를
+    // 없애기 위해 자동 재시작을 하지 않습니다. continuous=true인 한 현재 세션을
+    // 최대한 유지하고, 브라우저가 자체 종료한 경우에는 상태만 표시합니다.
+    clearTimeout(fluencyRestartTimer);
+    fluencyRestartTimer = null;
     if(fluencyStopping) return;
     if(timerInterval && timerSeconds > 0){
-      clearTimeout(fluencyRestartTimer);
-      fluencyRestartTimer = setTimeout(() => {
-        if(timerInterval && timerSeconds > 0 && !fluencyStopping){
-          try { r.start(); } catch(e) {
-            setFluencyLive('음성인식을 다시 시작하는 중입니다…', '🟡 재연결 중');
-          }
-        }
-      }, 600);
+      setFluencyLive(
+        '음성인식 연결이 종료되었습니다. 반복 시작음 방지를 위해 자동 재시작하지 않습니다. 필요하면 「음성인식 다시 연결」을 한 번 눌러 주세요.',
+        '🟡 인식 연결 종료'
+      );
+      const reconnectBtn = $('fluencyReconnectBtn');
+      if(reconnectBtn) reconnectBtn.style.display = 'inline-flex';
     } else {
       setFluencyLive('음성인식이 종료되었습니다.', '⏹ 종료');
     }
@@ -732,6 +739,18 @@ function startFluencyRecognition(){
   }
 }
 
+function reconnectFluencyRecognition(){
+  if(!timerInterval || timerSeconds <= 0){
+    setFluencyLive('1분 검사가 진행 중일 때만 다시 연결할 수 있습니다.', '🎤 대기 중');
+    return false;
+  }
+  if(fluencyListening) return true;
+  const btn = $('fluencyReconnectBtn');
+  if(btn) btn.style.display = 'none';
+  // 사용자가 직접 한 번 눌렀을 때만 재연결합니다. 자동 반복 재시작은 하지 않습니다.
+  return startFluencyRecognition();
+}
+
 function stopFluencyRecognition(){
   fluencyStopping = true;
   clearTimeout(fluencyRestartTimer);
@@ -742,6 +761,8 @@ function stopFluencyRecognition(){
     }
   }
   fluencyListening = false;
+  const reconnectBtn = $('fluencyReconnectBtn');
+  if(reconnectBtn) reconnectBtn.style.display = 'none';
 }
 
 function resetFluencyData(){
@@ -750,6 +771,8 @@ function resetFluencyData(){
   fluencyManualWords = new Set();
   fluencyFinalText = '';
   fluencyInterimText = '';
+  const reconnectBtn = $('fluencyReconnectBtn');
+  if(reconnectBtn) reconnectBtn.style.display = 'none';
   const input = $('fluencyManualInput');
   if(input) input.value = '';
   renderFluencyWords();
