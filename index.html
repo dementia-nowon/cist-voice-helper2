@@ -565,7 +565,10 @@ function addManualFluencyWord(){
 
 /* 기존 타이머에 음성인식을 연결 */
 async function startTimer(){
-  stopVoice();
+  // 중요: 여기서 stopVoice()를 호출하면 갤럭시탭에서 이미 허용된
+  // 마이크 스트림을 다시 종료하여 fluencyMicReady가 false로 돌아갑니다.
+  // 따라서 1분 시작 버튼에서는 음성 안내만 중지하고 마이크는 유지합니다.
+  if('speechSynthesis' in window) speechSynthesis.cancel();
 
   // SpeechRecognition.start() must be invoked directly from the user's tap.
   if(!fluencyMicReady){
