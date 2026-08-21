@@ -10,12 +10,12 @@
   <meta name="mobile-web-app-capable" content="yes">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <title>인지검사 도우미 · 모바일 음성인식 보정</title>
+  <title>인지검사 도우미 · 1분 음성수집 v8</title>
   <script>
-  // v7: 이전 PWA/Service Worker가 오래된 SpeechRecognition 버전을 계속 실행하는 문제 방지.
+  // v8: 1분 동안 Web Speech 결과를 누적하고 종료 후 한 번에 정답/오답을 판정합니다.
   // 이 빌드에서 한 번만 기존 SW와 Cache Storage를 정리합니다.
   (function(){
-    const BUILD='fluency-recorder-v7-20260821';
+    const BUILD='fluency-webspeech-v8-20260821';
     window.__FLUENCY_BUILD__=BUILD;
     window.addEventListener('load', async ()=>{
       try{
@@ -318,8 +318,8 @@ function render(autoSpeak=true){
           <span class="mic-state" id="fluencyMicState">🎤 대기 중</span>
           <span class="count" id="fluencyCollectStatus">결과는 1분 후 판정</span>
         </div>
-        <div class="fluency-live" id="fluencyLive">1분 시작을 누르면 마이크를 한 번 켜고 60초 동안 계속 녹음합니다.</div>
-        <div class="fluency-raw" id="fluencyRawText">📝 검사 중에는 판정하지 않습니다. 1분 종료 후 전체 녹음을 분석합니다.</div>
+        <div class="fluency-live" id="fluencyLive">1분 시작을 누르면 음성인식을 시작하고, 60초 동안 들은 말을 계속 누적합니다.</div>
+        <div class="fluency-raw" id="fluencyRawText">📝 검사 중에는 정답/오답을 표시하지 않습니다. 1분 종료 후 누적된 전체 발화를 한 번에 판정합니다.</div>
         <textarea class="fluency-transcript-edit" id="fluencyTranscriptEdit" placeholder="음성인식 원문을 검사자가 수정할 수 있습니다."></textarea>
         <div class="fluency-results" id="fluencyResults" style="display:none">
           <div class="fluency-result-card">
@@ -335,21 +335,19 @@ function render(autoSpeak=true){
         </div>
         <div class="fluency-controls">
           <button class="primary" id="fluencyStartBtn" onclick="startTimer()">🎤 1분 시작</button>
-          <button class="secondary" id="fluencyStopBtn" onclick="finishFluencyTest(false)">정지·분석</button>
+          <button class="secondary" id="fluencyStopBtn" onclick="finishFluencyTest(false)">정지·결과보기</button>
           <button class="secondary" onclick="resetTimer()">초기화</button>
           <button class="secondary" onclick="testFluencyMicrophone()">🎤 마이크 테스트</button>
         </div>
         <div class="fluency-post-controls" id="fluencyPostControls">
           <button class="secondary" onclick="reclassifyFluencyEditedTranscript()">✏️ 수정 원문 다시 분류</button>
-          <button class="secondary" onclick="retryFluencyTranscription()">🔄 녹음 다시 분석</button>
-          <button class="secondary" onclick="downloadFluencyRecording()">🎧 녹음 저장</button>
         </div>
         <div class="fluency-manual" id="fluencyManualWrap" style="display:none">
           <input id="fluencyManualInput" type="text" placeholder="정답으로 누락된 과일·채소를 검사자가 추가" onkeydown="if(event.key==='Enter') addManualFluencyWord()">
           <button class="secondary" onclick="addManualFluencyWord()">+ 정답 보정</button>
         </div>
-        <div class="fluency-model-note" id="fluencyModelNote">처음 사용할 때 브라우저용 다국어 Whisper 모델을 내려받습니다. 정확도를 우선해 Whisper Base를 사용하고, 기기에서 실행이 어려우면 자동으로 가벼운 모델로 전환합니다. 이후에는 브라우저 캐시를 사용하며 API 키가 필요하지 않습니다.</div>
-        <div class="fluency-help"><b>연속녹음 v7 · 검사 중 SpeechRecognition 미사용</b><br>마이크를 딱 한 번 열고 60초 후 한 번만 닫습니다. 이전 PWA/Service Worker 캐시는 자동 정리합니다. 이 문구가 보이면 새 녹음 방식이 적용된 것입니다.</div>
+        <div class="fluency-model-note" id="fluencyModelNote">Android Chrome은 침묵 후 음성인식 세션을 자체 종료할 수 있습니다. 검사 중에는 자동으로 다시 연결하며, 이때 기기 시스템의 ‘띵’ 소리가 날 수 있습니다. 판정은 1분 종료 후 한 번만 합니다.</div>
+        <div class="fluency-help"><b>1분 누적 음성인식 v8 · 종료 후 일괄 판정</b><br>검사 중에는 정답/오답을 숨기고 전체 발화만 내부에 누적합니다. ‘무·배·감·파·콩·귤’ 같은 한 글자 단어는 중간 인식이 안정적으로 잡히면 별도 보호합니다.</div>
       </div>`;
   } else {
     $('content').innerHTML = `<div class="figure-note">${page.display}</div>`;
@@ -374,68 +372,62 @@ function updateTimer(){
   timer.textContent = `${minutes}:${seconds}`;
 }
 
-/* ===== 과일·채소 유창성: 60초 연속녹음 → 종료 후 브라우저 로컬 STT =====
-   2026-08-21: Web Speech API 재시작 방식 제거. MediaRecorder로 마이크를 한 번만 열어
-   60초 연속 녹음한 뒤 Transformers.js + multilingual Whisper로 전체 녹음을 분석합니다. */
+/* ===== 과일·채소 유창성: 60초 음성 결과 누적 → 종료 후 일괄 판정 =====
+   Android Chrome은 침묵 후 Web Speech 세션을 종료할 수 있으므로 검사 시간 동안 자동 재연결합니다.
+   검사 중에는 정답/오답을 계산하지 않고 발화 원문만 내부에 누적합니다. */
 let fluencyWords = new Set();
 let fluencyAutoWords = new Set();
 let fluencyManualWords = new Set();
 let fluencyWrongWords = [];
 let fluencyResultReady = false;
 let fluencyFinalText = '';
-let fluencyMicStream = null;
-let fluencyRecorder = null;
-let fluencyRecordingChunks = [];
-let fluencyRecordingBlob = null;
-let fluencyRecordingStartedAt = 0;
+let fluencyRecognition = null;
+let fluencyShouldListen = false;
+let fluencyStarting = false;
 let fluencyFinishing = false;
-let fluencyTranscriber = null;
-let fluencyTranscriberPromise = null;
-let fluencyModelDevice = '';
-let fluencyPromptIds = undefined;
+let fluencyRestartTimer = null;
+let fluencySegments = [];
+let fluencyPendingInterim = '';
+let fluencyPendingInterimAt = 0;
+let fluencyShortStableTimer = null;
+let fluencyProtectedShortWords = new Set();
+let fluencyRestartCount = 0;
+let fluencyLastError = '';
+let fluencyDisablePhrases = false;
 
 function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
-function fluencyBrowserInfo(){
-  const secure = window.isSecureContext ? 'HTTPS 정상' : 'HTTPS 아님';
-  const mr = ('MediaRecorder' in window) ? '연속녹음 지원' : '연속녹음 미지원';
-  const gpu = navigator.gpu ? 'WebGPU 가능' : 'WASM 사용';
-  return `${secure} · ${mr} · ${gpu}`;
-}
+function getFluencySpeechRecognitionCtor(){ return window.SpeechRecognition || window.webkitSpeechRecognition || null; }
 function setFluencyLive(text, state){
   const live=$('fluencyLive'), mic=$('fluencyMicState');
   if(live && text) live.innerHTML=text;
   if(mic && state) mic.textContent=state;
 }
-function stopFluencyMic(){
-  if(fluencyMicStream){ try{ fluencyMicStream.getTracks().forEach(t=>t.stop()); }catch(_){} }
-  fluencyMicStream=null;
+function fluencyBrowserInfo(){
+  const secure=window.isSecureContext?'HTTPS 정상':'HTTPS 아님';
+  const SR=getFluencySpeechRecognitionCtor()?'음성인식 지원':'음성인식 미지원';
+  return `${secure} · ${SR}`;
 }
-function chooseRecordingMimeType(){
-  if(!('MediaRecorder' in window)) return '';
-  const candidates=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus'];
-  return candidates.find(t=>{ try{return MediaRecorder.isTypeSupported(t)}catch(_){return false} }) || '';
-}
-async function openFluencyMicForRecording(){
-  if(!window.isSecureContext){ setFluencyLive('🔒 <b>HTTPS 연결이 필요합니다.</b><br>GitHub Pages의 https:// 주소로 접속해 주세요.','🔒 HTTPS 필요'); return null; }
-  if(!navigator.mediaDevices?.getUserMedia || !('MediaRecorder' in window)){ setFluencyLive('⚠️ 이 브라우저에서는 1분 연속 마이크 녹음을 지원하지 않습니다. Android에서는 Chrome 최신 버전으로 열어 주세요.','⚠️ 녹음 미지원'); return null; }
-  stopFluencyMic();
+async function ensureFluencyMicPermission(){
+  if(!window.isSecureContext){ setFluencyLive('🔒 <b>HTTPS 연결이 필요합니다.</b><br>GitHub Pages의 https:// 주소로 접속해 주세요.','🔒 HTTPS 필요'); return false; }
+  if(!getFluencySpeechRecognitionCtor()){ setFluencyLive('⚠️ 이 브라우저에서는 Web Speech 음성인식을 사용할 수 없습니다. Android Chrome 최신 버전으로 열어 주세요.','⚠️ 음성인식 미지원'); return false; }
+  if(!navigator.mediaDevices?.getUserMedia) return true;
   try{
-    setFluencyLive('🎤 마이크 권한을 확인하고 있습니다.','🎤 권한 확인 중');
-    fluencyMicStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}});
-    return fluencyMicStream;
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    stream.getTracks().forEach(t=>t.stop());
+    return true;
   }catch(err){
     const name=err?.name||'UnknownError';
     let msg='마이크 사용 권한을 허용해 주세요.';
     if(name==='NotAllowedError'||name==='PermissionDeniedError') msg='Android 설정 → 앱 → Chrome → 권한 → 마이크를 허용하고, Chrome 사이트 설정에서도 이 사이트의 마이크를 허용해 주세요.';
-    else if(name==='NotFoundError'||name==='DevicesNotFoundError') msg='사용할 수 있는 마이크를 찾지 못했습니다.';
     else if(name==='NotReadableError'||name==='TrackStartError') msg='다른 앱이 마이크를 사용 중일 수 있습니다. 통화·녹음 앱을 종료한 뒤 다시 시도해 주세요.';
-    setFluencyLive('⚠️ <b>'+msg+'</b><br><small>오류: '+escapeHTML(name)+'</small>','⚠️ 마이크 오류'); stopFluencyMic(); return null;
+    setFluencyLive('⚠️ <b>'+msg+'</b><br><small>오류: '+escapeHTML(name)+'</small>','⚠️ 마이크 오류');
+    return false;
   }
 }
 async function testFluencyMicrophone(){
-  const stream=await openFluencyMicForRecording(); if(!stream) return false;
-  setFluencyLive(`🟢 마이크가 정상입니다. 「1분 시작」을 누르면 한 번 켠 마이크로 60초 동안 계속 녹음합니다.<br><small>${escapeHTML(fluencyBrowserInfo())}</small>`,'🟢 마이크 정상');
-  await sleep(250); stopFluencyMic(); return true;
+  const ok=await ensureFluencyMicPermission();
+  if(ok) setFluencyLive(`🟢 마이크와 음성인식 사용 준비가 됐습니다.<br><small>${escapeHTML(fluencyBrowserInfo())}</small>`,'🟢 마이크 정상');
+  return ok;
 }
 
 const FLUENCY_TERMS = [
@@ -517,243 +509,239 @@ function addManualFluencyWord(){
   const input=$('fluencyManualInput'); if(!input) return; const value=input.value.trim(); if(!value) return; const analysis=analyzeFluencyTranscript(value); const words=analysis.words.length?analysis.words:value.split(/\s+/).filter(w=>FLUENCY_VOCAB_SET.has(w)); words.forEach(w=>fluencyManualWords.add(w)); input.value=''; fluencyWords=new Set([...fluencyAutoWords,...fluencyManualWords]); fluencyWrongWords=fluencyWrongWords.filter(w=>!fluencyWords.has(w)); fluencyResultReady=true; renderFinalFluencyResults(); if($('fluencyCollectStatus')) $('fluencyCollectStatus').textContent=`정답 ${fluencyWords.size}개 · 오답/기타 ${fluencyWrongWords.length}개`;
 }
 function reclassifyFluencyEditedTranscript(){ const edit=$('fluencyTranscriptEdit'); if(!edit) return; applyFluencyClassification(edit.value); setFluencyLive('✅ 수정된 원문으로 정답/오답을 다시 분류했습니다.','✅ 재분류 완료'); }
-function updateModelProgress(info){ const live=$('fluencyLive'); if(!live||timerInterval||!info) return; if(info.status==='progress'&&Number.isFinite(info.progress)) live.innerHTML=`🧠 음성인식 모델 준비 중… ${Math.round(info.progress)}%`; else if(info.status==='ready') live.innerHTML='🧠 음성인식 모델 준비 완료'; }
-async function createFluencyTranscriber(){
-  // Transformers.js v4 runs Whisper completely inside the browser.
-  // No API key or server upload is used.
-  const mod=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0');
-  if(mod.env){
-    mod.env.allowLocalModels=false;
-    mod.env.useBrowserCache=true;
-  }
-  const opts={progress_callback:updateModelProgress};
 
-  // Android에서 정확도/안정성을 우선해 Whisper Base WASM q8을 먼저 사용합니다.
-  // WebGPU fp16은 기기별 정밀도 차이가 있어 이 검사에서는 우선 사용하지 않습니다.
+
+const FLUENCY_SHORT_WORDS=new Set(['무','배','감','파','콩','귤']);
+function normalizeRecognitionPiece(text){ return String(text||'').replace(/\s+/g,' ').trim(); }
+function recognitionCandidateScore(text,confidence){
+  const t=normalizeRecognitionPiece(text);
+  if(!t) return -1e9;
+  const a=analyzeFluencyTranscript(t);
+  let score=(a.words?.length||0)*120+(a.matchedChars||0)*25+(Number.isFinite(confidence)?confidence*8:0);
+  const n=normalizeFluencyText(t);
+  if(FLUENCY_SHORT_WORDS.has(n)) score+=180;
+  if(n==='뭐') score+=80; // 단독 '무'가 '뭐'로 받아써지는 경우 후보 비교에만 약하게 반영
+  return score;
+}
+function bestRecognitionAlternative(result){
+  if(!result?.length) return '';
+  let best=result[0]?.transcript||'', bestScore=recognitionCandidateScore(best,result[0]?.confidence);
+  for(let i=1;i<Math.min(result.length,5);i++){
+    const text=result[i]?.transcript||'';
+    const score=recognitionCandidateScore(text,result[i]?.confidence);
+    if(score>bestScore){ best=text; bestScore=score; }
+  }
+  return normalizeRecognitionPiece(best);
+}
+function commitFluencySegment(text){
+  const t=normalizeRecognitionPiece(text);
+  if(!t) return;
+  const last=fluencySegments[fluencySegments.length-1]||'';
+  if(normalizeFluencyText(last)===normalizeFluencyText(t)) return;
+  fluencySegments.push(t);
+}
+function clearShortStableTimer(){
+  if(fluencyShortStableTimer){ clearTimeout(fluencyShortStableTimer); fluencyShortStableTimer=null; }
+}
+function protectStableShortInterim(text){
+  clearShortStableTimer();
+  const raw=normalizeRecognitionPiece(text);
+  const n=normalizeFluencyText(raw);
+  if(!FLUENCY_SHORT_WORDS.has(n)) return;
+  const stamp=Date.now();
+  fluencyPendingInterimAt=stamp;
+  fluencyShortStableTimer=setTimeout(()=>{
+    fluencyShortStableTimer=null;
+    if(!fluencyShouldListen || !timerInterval) return;
+    if(fluencyPendingInterimAt!==stamp) return;
+    if(normalizeFluencyText(fluencyPendingInterim)===n) fluencyProtectedShortWords.add(n);
+  },420);
+}
+function applyRecognitionPhrases(r){
   try{
-    fluencyModelDevice='Whisper Base · WASM q8';
-    return await mod.pipeline('automatic-speech-recognition','onnx-community/whisper-base',{
-      ...opts, dtype:'q8'
-    });
-  }catch(err){
-    console.warn('Whisper Base WASM load failed; falling back to Tiny q8',err);
-    fluencyModelDevice='Whisper Tiny · WASM q8';
-    return await mod.pipeline('automatic-speech-recognition','onnx-community/whisper-tiny',{
-      ...opts, dtype:'q8'
-    });
-  }
+    if(fluencyDisablePhrases || !('SpeechRecognitionPhrase' in window) || !('phrases' in r)) return;
+    const Phrase=window.SpeechRecognitionPhrase;
+    r.phrases=FLUENCY_VOCAB.map(word=>new Phrase(word,FLUENCY_SHORT_WORDS.has(word)?5.5:3.2));
+  }catch(err){ console.debug('contextual speech phrases unavailable',err); }
 }
-function preloadFluencyTranscriber(){
-  if(fluencyTranscriber) return Promise.resolve(fluencyTranscriber);
-  if(!fluencyTranscriberPromise){
-    fluencyTranscriberPromise=createFluencyTranscriber()
-      .then(x=>{fluencyTranscriber=x;return x})
-      .catch(err=>{fluencyTranscriberPromise=null;throw err});
-  }
-  return fluencyTranscriberPromise;
-}
-async function blobToWhisperAudio(blob){
-  const arrayBuffer=await blob.arrayBuffer();
-  const AC=window.AudioContext||window.webkitAudioContext;
-  if(!AC) throw new Error('Web Audio API를 사용할 수 없습니다.');
-  const ctx=new AC();
-  try{
-    const decoded=await ctx.decodeAudioData(arrayBuffer.slice(0));
-    const targetRate=16000;
-    const frames=Math.max(1,Math.ceil(decoded.duration*targetRate));
-    const offline=new OfflineAudioContext(1,frames,targetRate);
-    const source=offline.createBufferSource();
-    source.buffer=decoded;
-    source.connect(offline.destination);
-    source.start(0);
-    const rendered=await offline.startRendering();
-    return new Float32Array(rendered.getChannelData(0));
-  }finally{
-    try{await ctx.close()}catch(_){}
-  }
-}
-function fluencyFrameRms(audio,start,end){
-  let sum=0,n=0;
-  for(let i=start;i<end&&i<audio.length;i++){const v=audio[i];sum+=v*v;n++;}
-  return n?Math.sqrt(sum/n):0;
-}
-function detectFluencySpeechSegments(audio,sampleRate=16000){
-  // Energy-based VAD is used only to cut the already-recorded 60 s audio into
-  // speech regions. The microphone itself stays open continuously for 60 s.
-  const frameMs=20;
-  const frame=Math.max(1,Math.round(sampleRate*frameMs/1000));
-  const rms=[];
-  for(let i=0;i<audio.length;i+=frame) rms.push(fluencyFrameRms(audio,i,Math.min(audio.length,i+frame)));
-  if(!rms.length) return [];
-  const sorted=[...rms].sort((a,b)=>a-b);
-  const noise=sorted[Math.floor(sorted.length*.20)]||0;
-  const peak=sorted[Math.max(0,Math.floor(sorted.length*.97)-1)]||0;
-  // Low floor is intentional: elderly speakers and one-syllable answers can be quiet.
-  const threshold=Math.max(0.0018, noise*1.9, peak*0.022);
-  const release=Math.max(0.0013,threshold*.52);
-  const preFrames=Math.round(420/frameMs);
-  const postFrames=Math.round(720/frameMs);
-  const maxGapFrames=Math.round(420/frameMs);
-  let inSpeech=false,startFrame=0,lastHot=-1,gap=0;
-  const raw=[];
-  for(let i=0;i<rms.length;i++){
-    const hot=inSpeech ? rms[i]>=release : rms[i]>=threshold;
-    if(!inSpeech && hot){
-      inSpeech=true;startFrame=Math.max(0,i-preFrames);lastHot=i;gap=0;
-    }else if(inSpeech){
-      if(hot){lastHot=i;gap=0;} else gap++;
-      if(gap>maxGapFrames){
-        const endFrame=Math.min(rms.length,lastHot+postFrames+1);
-        if(endFrame>startFrame) raw.push([startFrame,endFrame]);
-        inSpeech=false;gap=0;
+function createFluencyRecognition(){
+  const SR=getFluencySpeechRecognitionCtor();
+  if(!SR) return null;
+  const r=new SR();
+  r.lang='ko-KR';
+  r.continuous=true;
+  r.interimResults=true;
+  r.maxAlternatives=5;
+  applyRecognitionPhrases(r);
+  r.onstart=()=>{
+    fluencyStarting=false;
+    fluencyLastError='';
+    if(fluencyShouldListen && timerInterval){
+      const reconnect=fluencyRestartCount?` · 재연결 ${fluencyRestartCount}회`:'';
+      setFluencyLive(`🗣️ <b>음성을 듣고 있습니다.</b> 1분 동안은 판정하지 않습니다.${reconnect}`,'🟢 듣는 중');
+    }
+  };
+  r.onresult=(event)=>{
+    for(let i=event.resultIndex;i<event.results.length;i++){
+      const result=event.results[i];
+      const text=bestRecognitionAlternative(result);
+      if(!text) continue;
+      if(result.isFinal){
+        clearShortStableTimer();
+        fluencyPendingInterim='';
+        fluencyPendingInterimAt=0;
+        commitFluencySegment(text);
+      }else{
+        fluencyPendingInterim=text;
+        fluencyPendingInterimAt=Date.now();
+        protectStableShortInterim(text);
       }
     }
-  }
-  if(inSpeech){
-    const endFrame=Math.min(rms.length,Math.max(lastHot+postFrames+1,startFrame+1));
-    raw.push([startFrame,endFrame]);
-  }
-  // Merge nearby answers so "사과 배 포도" is seen with context, but keep long pauses separate.
-  const merged=[];
-  const mergeGapFrames=Math.round(850/frameMs);
-  for(const seg of raw){
-    const prev=merged[merged.length-1];
-    if(prev && seg[0]-prev[1]<=mergeGapFrames) prev[1]=seg[1];
-    else merged.push([...seg]);
-  }
-  const result=[];
-  const maxSeconds=14;
-  const maxFrames=Math.round(maxSeconds*1000/frameMs);
-  for(const [a,b] of merged){
-    // Ignore only extremely tiny noise bursts (< 80 ms after padding removed is not knowable,
-    // so we retain even short regions to protect words like 무/배/감/파).
-    let x=a;
-    while(x<b){
-      const y=Math.min(b,x+maxFrames);
-      result.push({
-        startSample:x*frame,
-        endSample:Math.min(audio.length,y*frame),
-        startSec:x*frame/sampleRate,
-        endSec:Math.min(audio.length,y*frame)/sampleRate
-      });
-      x=y;
+    if($('fluencyCollectStatus')) $('fluencyCollectStatus').textContent='듣는 중 · 결과는 1분 후';
+    if($('fluencyRawText')) $('fluencyRawText').textContent='📝 음성을 계속 수집하고 있습니다. 정답/오답과 전체 원문은 종료 후 표시됩니다.';
+  };
+  r.onerror=(event)=>{
+    const code=event?.error||'unknown';
+    fluencyLastError=code;
+    if(code==='phrases-not-supported'){ fluencyDisablePhrases=true; return; }
+    if(code==='not-allowed'||code==='service-not-allowed'){
+      fluencyShouldListen=false;
+      setFluencyLive('⚠️ 마이크 또는 음성인식 권한이 차단되었습니다. Chrome 사이트 설정에서 마이크를 허용해 주세요.','⚠️ 권한 차단');
+      return;
     }
-  }
-  return result;
-}
-function makeWhisperSegment(audio,startSample,endSample,sampleRate=16000,padSeconds=.65,minSeconds=2.2){
-  // 한 음절(무/배/감/파 등)은 너무 짧은 클립에서 Whisper가 공백으로 내보내기 쉬워
-  // 앞뒤에 충분한 무음을 붙여 최소 길이를 확보합니다.
-  const pad=Math.round(padSeconds*sampleRate);
-  const body=audio.subarray(Math.max(0,startSample),Math.min(audio.length,endSample));
-  const minTotal=Math.round(minSeconds*sampleRate);
-  const total=Math.max(body.length+pad*2,minTotal);
-  const out=new Float32Array(total);
-  const offset=Math.floor((total-body.length)/2);
-  out.set(body,offset);
-  return out;
-}
-function normalizeWhisperText(text){
-  return String(text||'')
-    .replace(/\[.*?\]|\(.*?\)/g,' ')
-    .replace(/\s+/g,' ')
-    .trim();
-}
-function getFluencyPromptIds(transcriber){
-  if(fluencyPromptIds!==undefined) return fluencyPromptIds||undefined;
-  try{
-    const tokenizer=transcriber?.tokenizer;
-    if(tokenizer && typeof tokenizer.get_prompt_ids==='function'){
-      const prompt='과일과 채소 이름을 대답합니다. 무, 배, 감, 파, 콩, 귤, 사과, 포도, 수박, 참외, 감자, 고구마, 양파, 배추, 양배추, 콩나물, 오이, 가지, 호박, 토마토.';
-      fluencyPromptIds=tokenizer.get_prompt_ids(prompt);
-      return fluencyPromptIds;
+    if(code==='audio-capture') setFluencyLive('⚠️ 마이크 오디오를 가져오지 못했습니다. 곧 다시 연결합니다.','⚠️ 마이크 오류');
+    else if(code==='network') setFluencyLive('⚠️ 음성인식 서버 연결이 잠시 끊겼습니다. 다시 연결합니다.','⚠️ 네트워크');
+    // no-speech / aborted 등은 onend에서 자동 재연결합니다.
+  };
+  r.onend=()=>{
+    fluencyStarting=false;
+    if(fluencyPendingInterim){
+      commitFluencySegment(fluencyPendingInterim);
+      fluencyPendingInterim='';
+      fluencyPendingInterimAt=0;
     }
-  }catch(err){ console.warn('Whisper prompt preparation failed',err); }
-  fluencyPromptIds=null;
-  return undefined;
-}
-function transcriptHasKnownAnswer(text){
-  return analyzeFluencyTranscript(text).words.length>0;
-}
-async function runWhisperOnce(transcriber,audio,useVocabularyPrompt=false){
-  const opts={language:'korean',task:'transcribe',return_timestamps:false,do_sample:false};
-  if(useVocabularyPrompt){
-    const promptIds=getFluencyPromptIds(transcriber);
-    if(promptIds) opts.prompt_ids=promptIds;
-  }
-  const output=await transcriber(audio,opts);
-  return normalizeWhisperText(output?.text||'');
-}
-async function transcribeFluencyRecording(blob){
-  if(!blob||!blob.size) throw new Error('녹음 데이터가 없습니다.');
-  setFluencyLive('🧠 1분 녹음을 음성인식용으로 변환하고 있습니다.','🧠 분석 준비');
-  const audio=await blobToWhisperAudio(blob);
-  const segments=detectFluencySpeechSegments(audio,16000);
-  const transcriber=await preloadFluencyTranscriber();
-
-  if(!segments.length){
-    setFluencyLive('🧠 말소리 구간을 찾지 못해 전체 녹음을 확인하고 있습니다.','🧠 음성 분석 중');
-    return await runWhisperOnce(transcriber,audio);
-  }
-
-  const texts=[];
-  for(let i=0;i<segments.length;i++){
-    const seg=segments[i];
-    const speechSeconds=Math.max(0,seg.endSec-seg.startSec);
-    const clip=makeWhisperSegment(audio,seg.startSample,seg.endSample,16000,.65,2.2);
-    setFluencyLive(`🧠 말한 구간을 분석하고 있습니다. ${i+1} / ${segments.length}<br><small>한 글자 답변은 짧은 발화 전용 보조 인식도 사용합니다.</small>`,'🧠 음성 분석 중');
-    try{
-      let text=await runWhisperOnce(transcriber,clip,false);
-      // 2초 이하의 짧은 발화가 비었거나 단어가 잘 안 잡힌 경우에만 보조 인식합니다.
-      if(speechSeconds<=2.0 && (!text || text.replace(/\s/g,'').length<=1 || !transcriptHasKnownAnswer(text))){
-        const retryClip=makeWhisperSegment(audio,seg.startSample,seg.endSample,16000,1.0,3.4);
-        const retry=await runWhisperOnce(transcriber,retryClip,true);
-        if(!text || transcriptHasKnownAnswer(retry)) text=retry||text;
-      }
-      if(text) texts.push(text);
-    }catch(err){
-      console.warn('Whisper segment failed',i,err);
+    if(fluencyShouldListen && timerInterval && timerSeconds>0){
+      scheduleFluencyRestart(fluencyLastError==='network'?500:90);
     }
-    await sleep(20);
-  }
-
-  let combined=normalizeWhisperText(texts.join(' '));
-  // If segment transcription produced nothing, use a full-audio fallback.
-  if(!combined){
-    setFluencyLive('🧠 구간 분석 결과가 없어 전체 녹음을 다시 확인하고 있습니다.','🧠 전체 재분석');
-    combined=await runWhisperOnce(transcriber,audio);
-  }
-  return combined;
+  };
+  return r;
 }
-function startMediaRecorder(stream){
-  fluencyRecordingChunks=[]; fluencyRecordingBlob=null; const mime=chooseRecordingMimeType(),options=mime?{mimeType:mime,audioBitsPerSecond:96000}:{audioBitsPerSecond:96000},recorder=new MediaRecorder(stream,options); fluencyRecorder=recorder; recorder.ondataavailable=e=>{if(e.data&&e.data.size) fluencyRecordingChunks.push(e.data)}; recorder.onerror=e=>{console.error('MediaRecorder error',e);setFluencyLive('⚠️ 녹음 중 오류가 발생했습니다. 정지 후 다시 시도해 주세요.','⚠️ 녹음 오류')}; recorder.start(); fluencyRecordingStartedAt=Date.now(); return recorder;
+function scheduleFluencyRestart(delay=90){
+  if(!fluencyShouldListen||!timerInterval||timerSeconds<=0) return;
+  if(fluencyRestartTimer) clearTimeout(fluencyRestartTimer);
+  fluencyRestartTimer=setTimeout(()=>{
+    fluencyRestartTimer=null;
+    if(!fluencyShouldListen||!timerInterval||timerSeconds<=0) return;
+    fluencyRestartCount++;
+    startFluencyRecognitionSession();
+  },delay);
 }
-function stopMediaRecorderAndGetBlob(){
-  return new Promise((resolve,reject)=>{ const recorder=fluencyRecorder; if(!recorder){resolve(fluencyRecordingBlob);return} const finalize=()=>{try{const type=recorder.mimeType||fluencyRecordingChunks[0]?.type||'audio/webm',blob=new Blob(fluencyRecordingChunks,{type});fluencyRecordingBlob=blob;fluencyRecorder=null;resolve(blob)}catch(err){reject(err)}}; if(recorder.state==='inactive'){finalize();return} recorder.onstop=finalize; try{recorder.stop()}catch(err){reject(err)} });
+function startFluencyRecognitionSession(){
+  if(!fluencyShouldListen||fluencyStarting) return false;
+  const r=createFluencyRecognition();
+  if(!r) return false;
+  fluencyRecognition=r;
+  fluencyStarting=true;
+  try{ r.start(); return true; }
+  catch(err){
+    fluencyStarting=false;
+    if(fluencyShouldListen&&timerInterval) scheduleFluencyRestart(180);
+    return false;
+  }
+}
+function stopFluencyRecognition(){
+  fluencyShouldListen=false;
+  clearShortStableTimer();
+  if(fluencyRestartTimer){ clearTimeout(fluencyRestartTimer); fluencyRestartTimer=null; }
+  const r=fluencyRecognition;
+  fluencyRecognition=null;
+  fluencyStarting=false;
+  if(r){ try{ r.stop(); }catch(_){ try{r.abort()}catch(__){} } }
+}
+function buildCollectedFluencyTranscript(){
+  const parts=[...fluencySegments];
+  if(fluencyPendingInterim) parts.push(fluencyPendingInterim);
+  // 한 글자 답변이 최종 결과가 되기 전에 세션이 끊긴 경우 보존한 안정 중간결과를 보완합니다.
+  for(const word of fluencyProtectedShortWords){
+    const already=analyzeFluencyTranscript(parts.join(' ')).words.includes(word);
+    if(!already) parts.push(word);
+  }
+  return parts.join(' ').replace(/\s+/g,' ').trim();
 }
 function resetFluencyData(){
-  fluencyWords=new Set();fluencyAutoWords=new Set();fluencyManualWords=new Set();fluencyWrongWords=[];fluencyResultReady=false;fluencyFinalText='';fluencyRecordingChunks=[];fluencyRecordingBlob=null;fluencyFinishing=false;
-  if($('fluencyResults')) $('fluencyResults').style.display='none'; if($('fluencyManualWrap')) $('fluencyManualWrap').style.display='none'; if($('fluencyPostControls')) $('fluencyPostControls').style.display='none'; if($('fluencyTranscriptEdit')){$('fluencyTranscriptEdit').style.display='none';$('fluencyTranscriptEdit').value=''} if($('fluencyCollectStatus')) $('fluencyCollectStatus').textContent='결과는 1분 후 판정'; if($('fluencyRawText')) $('fluencyRawText').textContent='📝 검사 중에는 판정하지 않습니다. 1분 종료 후 전체 녹음을 분석합니다.'; setFluencyLive('1분 시작을 누르면 마이크를 한 번 켜고 60초 동안 계속 녹음합니다.','🎤 대기 중');
+  fluencyWords=new Set();
+  fluencyAutoWords=new Set();
+  fluencyManualWords=new Set();
+  fluencyWrongWords=[];
+  fluencyResultReady=false;
+  fluencyFinalText='';
+  fluencySegments=[];
+  fluencyPendingInterim='';
+  fluencyPendingInterimAt=0;
+  fluencyProtectedShortWords=new Set();
+  fluencyRestartCount=0;
+  fluencyLastError='';
+  fluencyFinishing=false;
+  clearShortStableTimer();
+  if($('fluencyResults')) $('fluencyResults').style.display='none';
+  if($('fluencyManualWrap')) $('fluencyManualWrap').style.display='none';
+  if($('fluencyPostControls')) $('fluencyPostControls').style.display='none';
+  if($('fluencyTranscriptEdit')){ $('fluencyTranscriptEdit').style.display='none'; $('fluencyTranscriptEdit').value=''; }
+  if($('fluencyCollectStatus')) $('fluencyCollectStatus').textContent='결과는 1분 후 판정';
+  if($('fluencyRawText')) $('fluencyRawText').textContent='📝 검사 중에는 정답/오답을 표시하지 않습니다. 1분 종료 후 누적된 전체 발화를 한 번에 판정합니다.';
+  setFluencyLive('1분 시작을 누르면 음성인식을 시작하고, 60초 동안 들은 말을 계속 누적합니다.','🎤 대기 중');
 }
 async function startTimer(){
-  if(fluencyFinishing) return; if('speechSynthesis' in window) speechSynthesis.cancel(); if(timerInterval||fluencyRecorder?.state==='recording') await resetTimer(); if(!window.isSecureContext){setFluencyLive('🔒 GitHub Pages의 https:// 주소로 접속해야 마이크를 사용할 수 있습니다.','🔒 HTTPS 필요');return} resetFluencyData(); const stream=await openFluencyMicForRecording(); if(!stream) return;
-  try{startMediaRecorder(stream)}catch(err){stopFluencyMic();setFluencyLive('⚠️ 연속 녹음을 시작하지 못했습니다: '+escapeHTML(err?.message||err?.name||'unknown'),'⚠️ 녹음 시작 실패');return}
-  timerSeconds=60;updateTimer();setFluencyLive('<span class="fluency-recording-dot"></span><b>60초 연속 녹음 중입니다.</b> 중간에 쉬어도 마이크는 계속 켜져 있습니다.','🔴 녹음 중'); if($('fluencyRawText')) $('fluencyRawText').textContent='📝 지금은 녹음만 합니다. 정답/오답 판정과 음성인식은 1분 종료 후 실행합니다.'; timerInterval=setInterval(()=>{timerSeconds--;updateTimer();if(timerSeconds<=0) finishFluencyTest(true)},1000);
+  if(fluencyFinishing) return;
+  if('speechSynthesis' in window) speechSynthesis.cancel();
+  if(timerInterval) await resetTimer();
+  resetFluencyData();
+  const permission=await ensureFluencyMicPermission();
+  if(!permission) return;
+  timerSeconds=60;
+  updateTimer();
+  fluencyShouldListen=true;
+  setFluencyLive('<span class="fluency-recording-dot"></span><b>1분 음성 수집 중입니다.</b> 검사 중에는 판정하지 않습니다.','🟢 연결 중');
+  if($('fluencyRawText')) $('fluencyRawText').textContent='📝 지금은 들은 말을 내부에 누적만 합니다. 1분이 끝나면 전체 원문과 정답/오답이 표시됩니다.';
+  timerInterval=setInterval(()=>{
+    timerSeconds--;
+    updateTimer();
+    if(timerSeconds<=0) finishFluencyTest(true);
+  },1000);
+  if(!startFluencyRecognitionSession()){
+    setFluencyLive('⚠️ 음성인식을 시작하지 못했습니다. Chrome 최신 버전인지 확인해 주세요.','⚠️ 시작 실패');
+  }
 }
 async function finishFluencyTest(announce=true){
-  if(fluencyFinishing) return; const hasRecording=!!fluencyRecorder||!!fluencyRecordingBlob; if(!hasRecording&&!timerInterval) return; fluencyFinishing=true; if(timerInterval){clearInterval(timerInterval);timerInterval=null} timerSeconds=Math.max(0,timerSeconds);updateTimer();setFluencyLive('⏹ 녹음을 종료하고 있습니다.','⏹ 녹음 종료'); let blob=null; try{blob=await stopMediaRecorderAndGetBlob()}catch(err){console.error(err)}finally{stopFluencyMic()}
-  if(announce&&'speechSynthesis' in window) speakText('그만하세요. 1분이 끝났습니다.'); if(!blob||!blob.size){setFluencyLive('⚠️ 녹음 파일을 만들지 못했습니다. 다시 시도해 주세요.','⚠️ 녹음 실패');fluencyFinishing=false;return} if($('fluencyPostControls')) $('fluencyPostControls').style.display='flex';
-  try{const transcript=await transcribeFluencyRecording(blob);applyFluencyClassification(transcript);setFluencyLive(`✅ 1분 녹음 분석이 끝났습니다. <small>(${escapeHTML(fluencyModelDevice||'브라우저')})</small>`,'✅ 분석 완료')}catch(err){console.error('Fluency transcription failed',err);if($('fluencyRawText')) $('fluencyRawText').innerHTML='⚠️ 자동 음성인식에 실패했습니다. 녹음은 보존되어 있습니다. 「녹음 다시 분석」을 누르거나 녹음을 저장할 수 있습니다.';if($('fluencyTranscriptEdit')){$('fluencyTranscriptEdit').style.display='block';$('fluencyTranscriptEdit').placeholder='자동 인식 실패 시 검사자가 들은 내용을 직접 입력한 뒤 “수정 원문 다시 분류”를 누를 수 있습니다.'}setFluencyLive('⚠️ 음성 분석에 실패했습니다: '+escapeHTML(err?.message||err?.name||'unknown'),'⚠️ 분석 실패')}finally{fluencyFinishing=false}
+  if(fluencyFinishing) return;
+  if(!timerInterval && !fluencyShouldListen && !fluencyRecognition) return;
+  fluencyFinishing=true;
+  if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
+  fluencyShouldListen=false;
+  if(fluencyRestartTimer){ clearTimeout(fluencyRestartTimer); fluencyRestartTimer=null; }
+  clearShortStableTimer();
+  const r=fluencyRecognition;
+  if(r){ try{ r.stop(); }catch(_){ try{r.abort()}catch(__){} } }
+  // stop() 직후 전달되는 마지막 final result를 받을 시간을 줍니다.
+  await sleep(380);
+  if(fluencyPendingInterim){ commitFluencySegment(fluencyPendingInterim); fluencyPendingInterim=''; }
+  fluencyRecognition=null;
+  fluencyStarting=false;
+  const transcript=buildCollectedFluencyTranscript();
+  applyFluencyClassification(transcript);
+  setFluencyLive('✅ 1분 동안 들은 전체 발화를 기준으로 정답과 오답을 판정했습니다.','✅ 판정 완료');
+  if(announce && 'speechSynthesis' in window) speakText('그만하세요. 1분이 끝났습니다.');
+  fluencyFinishing=false;
 }
-async function retryFluencyTranscription(){
-  if(fluencyFinishing) return; if(!fluencyRecordingBlob){setFluencyLive('다시 분석할 녹음이 없습니다.','⚠️ 녹음 없음');return} fluencyFinishing=true; try{const transcript=await transcribeFluencyRecording(fluencyRecordingBlob);applyFluencyClassification(transcript);setFluencyLive('✅ 녹음을 다시 분석했습니다.','✅ 분석 완료')}catch(err){setFluencyLive('⚠️ 다시 분석하지 못했습니다: '+escapeHTML(err?.message||err?.name||'unknown'),'⚠️ 분석 실패')}finally{fluencyFinishing=false}
+async function stopTimer(){
+  if(timerInterval||fluencyShouldListen||fluencyRecognition){ await finishFluencyTest(false); return; }
 }
-function downloadFluencyRecording(){
-  if(!fluencyRecordingBlob){setFluencyLive('저장할 녹음이 없습니다.','⚠️ 녹음 없음');return} const url=URL.createObjectURL(fluencyRecordingBlob),a=document.createElement('a'),ext=fluencyRecordingBlob.type.includes('mp4')?'m4a':(fluencyRecordingBlob.type.includes('ogg')?'ogg':'webm');a.href=url;a.download='fruit-vegetable-fluency-recording.'+ext;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
-}
-async function stopTimer(){ if(timerInterval||fluencyRecorder?.state==='recording'){await finishFluencyTest(false);return} stopFluencyMic(); }
 async function resetTimer(){
-  if(timerInterval){clearInterval(timerInterval);timerInterval=null} if(fluencyRecorder&&fluencyRecorder.state!=='inactive'){try{fluencyRecorder.onstop=null;fluencyRecorder.stop()}catch(_){}} fluencyRecorder=null;stopFluencyMic();timerSeconds=60;updateTimer();resetFluencyData();
+  if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
+  stopFluencyRecognition();
+  timerSeconds=60;
+  updateTimer();
+  resetFluencyData();
 }
 
 function testVoice(){ speakText(pages[0].speech); }
@@ -1121,7 +1109,6 @@ function stopVoice(){
   if('speechSynthesis' in window) speechSynthesis.cancel();
   if(wasActive && $('speechStatus')) $('speechStatus').textContent = '중지';
   activeUtterance = null;
-  if(pages[current] && pages[current].mode === 'timer' && !timerInterval && fluencyRecorder?.state !== 'recording') { stopFluencyMic(); }
   requestAnimationFrame(hideSpeechMarker);
 }
 
