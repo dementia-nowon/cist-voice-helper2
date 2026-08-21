@@ -518,7 +518,13 @@ function findFluencyOccurrences(normalized, alias){
 // 예: 콩나물→콩나물만, 완두콩→완두콩만, 양배추→양배추만,
 //     애호박→애호박만, 방울토마토→방울토마토만 기록됩니다.
 function analyzeFluencyTranscript(text){
-  const normalized = normalizeFluencyText(text);
+  let normalized = normalizeFluencyText(text);
+
+  // Android/Google 한국어 음성인식은 한 글자 채소 '무'를 종종 '뭐'로
+  // 받아씁니다. 발화 전체가 정확히 '뭐' 한 단어일 때만 '무'로 보정합니다.
+  // '뭐가', '뭐예요' 같은 일반 문장에는 적용하지 않아 오검출을 막습니다.
+  if(normalized === '뭐') normalized = '무';
+
   if(!normalized) return {text:String(text||''), normalized:'', words:[], matchedChars:0};
 
   const candidates = [];
@@ -617,6 +623,25 @@ function chooseBestFluencyAlternative(result){
     a.alternativeIndex - b.alternativeIndex
   );
   return analyses[0];
+}
+
+// 모바일 Chrome은 '무', '배', '감', '파'처럼 짧은 발화를 중간 결과로만
+// 보여 준 뒤 최종 결과 없이 세션을 종료하는 경우가 있습니다. 세션이 끝나기
+// 직전에 중간 결과가 실제 과일·채소로 판정되면 버리지 않고 확정합니다.
+function commitUsefulFluencyInterim(){
+  const pending = String(fluencyInterimText || '').trim();
+  if(!pending) return false;
+
+  const analysis = analyzeFluencyTranscript(pending);
+  if(!analysis.words.length) return false;
+
+  fluencyFinalText = (fluencyFinalText + ' ' + pending).replace(/\s+/g,' ').trim();
+  fluencyInterimText = '';
+  rebuildAutoFluencyWords();
+
+  const raw = $('fluencyRawText');
+  if(raw) raw.textContent = '📝 누적 음성인식 원문: ' + fluencyFinalText;
+  return true;
 }
 
 function setFluencyLive(text, state){
@@ -734,6 +759,11 @@ function createFluencyRecognition(){
     // 예전에 생성한 recognition 객체의 늦은 onend가 새 세션을 방해하지 않게 합니다.
     if(fluencyRecognition !== r) return;
     fluencyListening = false;
+
+    // '무' 같은 짧은 발화가 final 결과 없이 interim으로만 남은 경우에도
+    // 세션 종료 전에 저장합니다.
+    commitUsefulFluencyInterim();
+
     if(fluencyStopping) return;
 
     if(timerInterval && timerSeconds > 0 && !r.__fatalError){
