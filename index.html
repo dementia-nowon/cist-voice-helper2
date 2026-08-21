@@ -356,21 +356,14 @@ async function requestFluencyMic(){
   }
 
   try{
-    // 이미 살아 있는 마이크 스트림이 있으면 그대로 재사용합니다.
-    const currentTrack = fluencyMicStream?.getAudioTracks?.()[0];
-    if(currentTrack && currentTrack.readyState === 'live'){
-      fluencyAudioTrack = currentTrack;
-      fluencyMicReady = true;
-      return true;
-    }
-
+    // 권한만 확인한 뒤 MediaStream은 즉시 닫습니다.
+    // Android Chrome에서는 getUserMedia 스트림을 계속 잡아 둔 상태에서
+    // Web Speech API가 같은 마이크를 다시 사용하면 오히려 인식 세션이 빨리
+    // 끝나는 기기 조합이 있어, 음성인식 자체가 마이크를 직접 사용하게 합니다.
     stopFluencyMic();
     if(mic) mic.textContent = '🎤 권한 확인 중';
-    if(live) live.textContent = 'Chrome의 마이크 사용 권한을 확인하고 있습니다.';
+    if(live) live.textContent = '마이크 사용 권한을 확인하고 있습니다.';
 
-    // 1분 검사 동안 이 MediaStream을 닫지 않습니다. Android Chrome이
-    // 몇 초간 침묵한 뒤 SpeechRecognition 세션을 종료하더라도 물리적인
-    // 마이크 트랙은 계속 살아 있게 하여 재연결 때 다시 장치를 여닫는 일을 줄입니다.
     const stream = await navigator.mediaDevices.getUserMedia({
       audio:{
         echoCancellation:true,
@@ -378,25 +371,14 @@ async function requestFluencyMic(){
         autoGainControl:true
       }
     });
-    const tracks = stream.getAudioTracks();
-    if(!tracks.length) throw new DOMException('사용 가능한 마이크 트랙이 없습니다.', 'NotFoundError');
-
-    fluencyMicStream = stream;
-    fluencyAudioTrack = tracks[0];
+    stream.getTracks().forEach(t=>t.stop());
+    fluencyMicStream = null;
+    fluencyAudioTrack = null;
     fluencyMicReady = true;
+    await sleep(80);
 
-    fluencyAudioTrack.onended = () => {
-      if(timerInterval && timerSeconds > 0 && !fluencyStopping){
-        setFluencyLive('⚠️ 마이크 연결이 끊겼습니다. Chrome의 마이크 권한을 확인해 주세요.', '⚠️ 마이크 끊김');
-        const btn = $('fluencyReconnectBtn');
-        if(btn) btn.style.display = 'inline-flex';
-      }
-    };
-
-    // 마이크 트랙이 실제 live 상태가 된 뒤 음성인식을 시작합니다.
-    await sleep(120);
-    if(mic) mic.textContent = '🟢 마이크 유지 중';
-    if(live) live.textContent = `🟢 마이크가 연결되었습니다. 1분 동안 연결을 유지합니다. (${fluencyBrowserInfo()})`;
+    if(mic) mic.textContent = '🟢 마이크 허용됨';
+    if(live) live.textContent = `🟢 마이크 권한이 확인되었습니다. (${fluencyBrowserInfo()})`;
     return true;
   }catch(err){
     fluencyMicReady = false;
@@ -465,7 +447,7 @@ const FLUENCY_TERMS = [
   {word:'표고버섯', aliases:['표고 버섯']}, {word:'느타리버섯', aliases:['느타리 버섯']},
   {word:'팽이버섯', aliases:['팽이 버섯']}, {word:'새송이버섯', aliases:['새송이 버섯']}, {word:'버섯'},
   {word:'완두콩', aliases:['완두 콩']}, {word:'강낭콩', aliases:['강낭 콩']}, {word:'검은콩', aliases:['검은 콩']},
-  {word:'콩나물', aliases:['콩 나물']}, {word:'콩'}, {word:'숙주나물', aliases:['숙주 나물']}, {word:'숙주'},
+  {word:'콩나물', aliases:['콩 나물','공나물','공 나물']}, {word:'콩'}, {word:'숙주나물', aliases:['숙주 나물']}, {word:'숙주'},
   {word:'옥수수'}, {word:'연근'}, {word:'우엉'}, {word:'도라지'}, {word:'더덕'}, {word:'미나리'},
   {word:'쑥갓'}, {word:'셀러리', aliases:['샐러리','세러리']}, {word:'아스파라거스'}, {word:'케일'},
   {word:'청경채', aliases:['청경 채']}, {word:'열무'}, {word:'고사리'}, {word:'냉이'}, {word:'달래'},
@@ -532,7 +514,7 @@ function findFluencyOccurrences(normalized, alias){
   return hits;
 }
 
-// 가장 긴 단어부터 자리를 차지하게 하여 부분단어의 중복 오검출을 차단합니다.// 가장 긴 단어부터 자리를 차지하게 하여 부분단어의 중복 오검출을 차단합니다.
+// 가장 긴 단어부터 자리를 차지하게 하여 부분단어의 중복 오검출을 차단합니다.
 // 예: 콩나물→콩나물만, 완두콩→완두콩만, 양배추→양배추만,
 //     애호박→애호박만, 방울토마토→방울토마토만 기록됩니다.
 function analyzeFluencyTranscript(text){
@@ -615,11 +597,11 @@ function rebuildAutoFluencyWords(){
   return analysis;
 }
 
-// SpeechRecognition의 여러 후보를 모두 합치면 오인식 단어까지 추가될 수 있으므로// SpeechRecognition의 여러 후보를 모두 합치면 오인식 단어까지 추가될 수 있으므로
+// SpeechRecognition의 여러 후보를 모두 합치면 오인식 단어까지 추가될 수 있으므로
 // 후보별로 분석한 뒤 과일·채소를 가장 설득력 있게 잡은 한 후보만 채점합니다.
 function chooseBestFluencyAlternative(result){
   const analyses = [];
-  const limit = Math.min(3, result?.length || 0);
+  const limit = Math.min(5, result?.length || 0);
   for(let j=0; j<limit; j++){
     const alt = result[j];
     const analysis = analyzeFluencyTranscript(alt?.transcript || '');
@@ -649,20 +631,27 @@ function createFluencyRecognition(){
   if(!SR) return null;
   const r = new SR();
   r.lang = 'ko-KR';
-  // 연속 발화를 한 세션에서 계속 받습니다. 매 단어마다 인식 세션을
-  // 재시작하면 Android/Chrome에서 시스템 효과음이 반복되고 발화가 잘릴 수 있습니다.
-  r.continuous = true;
+
+  // Android Chrome은 continuous=true라도 침묵 후 세션을 종료합니다.
+  // 이 앱은 그 종료를 정상적인 "짧은 청취 구간 종료"로 보고 새 세션을 계속
+  // 시작합니다. 시스템 시작음이 날 수 있지만, 1분 동안 듣기가 끊기지 않는 것을
+  // 우선합니다. Android 이외에서는 가능한 경우 continuous 모드를 유지합니다.
+  r.continuous = !isAndroidChrome();
   r.interimResults = true;
-  r.maxAlternatives = 3;
+  r.maxAlternatives = 5;
+  r.__fatalError = false;
 
   r.onstart = () => {
+    if(fluencyRecognition !== r || fluencyStopping) return;
     fluencyListening = true;
+    fluencyRestartFailures = 0;
     const reconnectBtn = $('fluencyReconnectBtn');
     if(reconnectBtn) reconnectBtn.style.display = 'none';
-    setFluencyLive('🗣️ 음성인식이 시작되었습니다. 과일이나 채소를 말씀해 주세요.', '🟢 듣는 중');
+    setFluencyLive('🗣️ 듣고 있습니다. 쉬었다가 말씀하셔도 자동으로 다시 연결됩니다.', '🟢 듣는 중');
   };
 
   r.onresult = (event) => {
+    if(fluencyRecognition !== r || fluencyStopping) return;
     let interim = '';
     const acceptedFinals = [];
 
@@ -672,28 +661,31 @@ function createFluencyRecognition(){
         const chosen = chooseBestFluencyAlternative(result);
         if(chosen.text) acceptedFinals.push(chosen.text);
       } else {
+        // 중간 결과는 1순위 원문을 보관합니다. Android가 최종 결과에서
+        // '콩나물'을 '콩'처럼 잘라 확정할 때 복구하는 데 사용합니다.
         interim += (result[0]?.transcript || '') + ' ';
       }
     }
 
     let finalText = acceptedFinals.join(' ').trim();
     if(finalText && fluencyInterimText){
-      // Android 음성인식이 interim에서는 '콩나물'/'사과배'까지 들었다가
-      // final에서 '콩'/'사과'처럼 뒤를 잘라 확정하는 경우를 보정합니다.
       const prev = analyzeFluencyTranscript(fluencyInterimText);
       const fin = analyzeFluencyTranscript(finalText);
       const prevCompact = prev.normalized.replace(/\s+/g,'');
       const finCompact = fin.normalized.replace(/\s+/g,'');
       const isSafePrefixRescue = finCompact && prevCompact.startsWith(finCompact) &&
-        prevCompact.length > finCompact.length && prevCompact.length - finCompact.length <= 5 &&
+        prevCompact.length > finCompact.length && prevCompact.length - finCompact.length <= 6 &&
         prev.matchedChars > fin.matchedChars && prev.words.length >= fin.words.length;
       if(isSafePrefixRescue) finalText = fluencyInterimText;
     }
 
     if(finalText){
       fluencyFinalText = (fluencyFinalText + ' ' + finalText).replace(/\s+/g,' ').trim();
-      // 전체 누적 발화를 매번 다시 분석합니다.
-      // 예: 첫 결과 '콩' + 다음 결과 '나물' => 기존 콩을 제거하고 콩나물로 교체.
+      // 누적 원문 전체를 다시 분석하므로
+      //   콩 + 나물 -> 콩나물
+      //   사과 + 배 -> 사과, 배
+      //   포도수박참외 -> 포도, 수박, 참외
+      // 처럼 발화가 세션 경계에서 잘려도 다시 합쳐 판정할 수 있습니다.
       rebuildAutoFluencyWords();
     }
 
@@ -716,38 +708,42 @@ function createFluencyRecognition(){
   };
 
   r.onerror = (event) => {
+    if(fluencyRecognition !== r || fluencyStopping) return;
     const code = event.error || 'unknown';
     fluencyListening = false;
     const messages = {
       'not-allowed':'음성인식 사용이 차단되었습니다. Chrome의 마이크 권한을 허용해 주세요.',
       'service-not-allowed':'Chrome의 음성인식 서비스가 허용되지 않았습니다. Chrome 최신 버전에서 다시 시도해 주세요.',
-      'network':'Google 음성인식 서버 연결에 실패했습니다. Wi‑Fi/모바일 데이터 연결을 확인해 주세요.',
-      'no-speech':'음성이 감지되지 않았습니다. 계속 듣기를 다시 시작합니다.',
+      'network':'음성인식 서버 연결이 잠시 불안정합니다. 자동으로 다시 연결합니다.',
+      'no-speech':'잠시 말씀이 없어 청취 구간이 끝났습니다. 자동으로 다시 듣습니다.',
       'audio-capture':'마이크를 사용할 수 없습니다. 다른 녹음/통화 앱을 종료해 주세요.',
       'language-not-supported':'한국어 음성인식을 지원하지 않습니다.',
-      'aborted':'음성인식이 중단되었습니다.'
+      'aborted':'음성인식이 잠시 중단되었습니다. 자동으로 다시 연결합니다.'
     };
-    if(code !== 'no-speech' && code !== 'aborted'){
+
+    // 권한/장치/언어 오류만 자동 재시작을 멈춥니다.
+    r.__fatalError = ['not-allowed','service-not-allowed','audio-capture','language-not-supported'].includes(code);
+    if(r.__fatalError){
       setFluencyLive('⚠️ ' + (messages[code] || ('음성인식 오류: ' + code)), '⚠️ ' + code);
+    } else if(code !== 'no-speech'){
+      setFluencyLive('🎤 ' + (messages[code] || '음성인식을 다시 연결합니다.'), '🟡 재연결 중');
     }
   };
 
   r.onend = () => {
+    // 예전에 생성한 recognition 객체의 늦은 onend가 새 세션을 방해하지 않게 합니다.
+    if(fluencyRecognition !== r) return;
     fluencyListening = false;
-    clearTimeout(fluencyRestartTimer);
-    fluencyRestartTimer = null;
     if(fluencyStopping) return;
 
-    if(timerInterval && timerSeconds > 0){
-      // Android Chrome은 continuous=true여도 4~7초 정도 침묵하면 인식 엔진만
-      // 종료할 수 있습니다. 검사 타이머가 진행 중이면 같은 마이크 트랙을 유지한 채
-      // 음성인식 서비스만 다시 연결합니다. 마이크 장치를 닫았다 열지 않는 것이 핵심입니다.
-      setFluencyLive('🎤 계속 듣는 중입니다. 잠시 말씀이 없어 음성인식만 자동으로 이어 붙이고 있습니다.', '🟢 듣는 중');
+    if(timerInterval && timerSeconds > 0 && !r.__fatalError){
+      clearTimeout(fluencyRestartTimer);
+      setFluencyLive('🎤 계속 듣기 위해 음성인식을 다시 연결하고 있습니다.', '🟡 재연결 중');
       fluencyRestartTimer = setTimeout(() => {
         fluencyRestartTimer = null;
         restartFluencyRecognitionAfterSilence();
-      }, 120);
-    } else {
+      }, 220);
+    } else if(!timerInterval || timerSeconds <= 0){
       setFluencyLive('음성인식이 종료되었습니다.', '⏹ 종료');
     }
   };
@@ -755,28 +751,13 @@ function createFluencyRecognition(){
 }
 
 function startRecognitionInstance(recognition){
-  const track = getLiveFluencyAudioTrack();
   try{
-    if(track){
-      // 최신 Web Speech API는 기존 MediaStreamTrack을 직접 입력으로 받을 수 있습니다.
-      // 지원하지 않는 구현은 추가 인수를 무시하거나 예외를 낼 수 있으므로 아래에서 fallback합니다.
-      recognition.start(track);
-      fluencyRecognitionInput = 'shared-track';
-    } else {
-      recognition.start();
-      fluencyRecognitionInput = 'browser-mic';
-    }
+    // 모바일 안정성을 위해 실험적인 start(audioTrack) 대신 브라우저가 직접
+    // 마이크를 여는 표준 start()만 사용합니다.
+    recognition.start();
+    fluencyRecognitionInput = 'browser-mic';
     return true;
   }catch(e){
-    // track 인수 미지원 브라우저를 위한 fallback. InvalidStateError는 이미 시작된
-    // 상태일 수 있으므로 즉시 다시 start()하지 않습니다.
-    if(track && e?.name !== 'InvalidStateError'){
-      try{
-        recognition.start();
-        fluencyRecognitionInput = 'browser-mic';
-        return true;
-      }catch(_){}
-    }
     return false;
   }
 }
@@ -790,45 +771,47 @@ function startFluencyRecognition(){
 
   fluencyStopping = false;
   clearTimeout(fluencyRestartTimer);
+  fluencyRestartTimer = null;
   fluencyRestartFailures = 0;
-  if(fluencyRecognition){
-    try { fluencyRecognition.abort(); } catch(e) {}
-  }
-  fluencyRecognition = createFluencyRecognition();
 
-  const ok = startRecognitionInstance(fluencyRecognition);
+  const old = fluencyRecognition;
+  fluencyRecognition = null;
+  if(old){ try { old.abort(); } catch(e) {} }
+
+  const r = createFluencyRecognition();
+  fluencyRecognition = r;
+  const ok = !!r && startRecognitionInstance(r);
   if(!ok){
-    setFluencyLive('음성인식 시작에 실패했습니다. 마이크 권한과 Chrome 버전을 확인해 주세요.', '⚠️ 시작 실패');
+    setFluencyLive('음성인식 시작에 실패했습니다. 자동으로 다시 시도합니다.', '🟡 재연결 중');
+    fluencyRestartTimer = setTimeout(restartFluencyRecognitionAfterSilence, 600);
   }
-  return ok;
+  return true;
 }
 
 function restartFluencyRecognitionAfterSilence(){
   if(fluencyStopping || !timerInterval || timerSeconds <= 0) return false;
   if(fluencyListening) return true;
 
-  // 동일 SpeechRecognition 객체를 먼저 재사용하여 결과 누적과 세션 전환을 최소화합니다.
-  if(fluencyRecognition && startRecognitionInstance(fluencyRecognition)){
-    fluencyRestartFailures = 0;
-    return true;
+  // 모바일 Chrome에서는 같은 SpeechRecognition 객체를 재사용하는 것보다
+  // 새 객체로 시작하는 편이 침묵 종료 후 복구가 안정적입니다.
+  const old = fluencyRecognition;
+  fluencyRecognition = null;
+  if(old){
+    try{ old.onend = null; old.onerror = null; old.abort(); }catch(_){}
   }
 
-  // 브라우저가 기존 객체 재시작을 거부할 때만 새 객체를 만듭니다.
-  fluencyRecognition = createFluencyRecognition();
-  if(fluencyRecognition && startRecognitionInstance(fluencyRecognition)){
+  const r = createFluencyRecognition();
+  fluencyRecognition = r;
+  if(r && startRecognitionInstance(r)){
     fluencyRestartFailures = 0;
     return true;
   }
 
   fluencyRestartFailures++;
-  if(fluencyRestartFailures < 3 && timerInterval && timerSeconds > 0){
-    clearTimeout(fluencyRestartTimer);
-    fluencyRestartTimer = setTimeout(restartFluencyRecognitionAfterSilence, 450);
-  }else{
-    setFluencyLive('⚠️ 음성인식을 자동으로 다시 연결하지 못했습니다. 아래 「음성인식 다시 연결」을 눌러 주세요.', '⚠️ 재연결 필요');
-    const btn = $('fluencyReconnectBtn');
-    if(btn) btn.style.display = 'inline-flex';
-  }
+  const delay = Math.min(1600, 350 + fluencyRestartFailures * 150);
+  clearTimeout(fluencyRestartTimer);
+  fluencyRestartTimer = setTimeout(restartFluencyRecognitionAfterSilence, delay);
+  setFluencyLive('🎤 음성인식을 다시 연결하는 중입니다. 잠시 후 자동으로 계속 듣습니다.', '🟡 재연결 중');
   return false;
 }
 
@@ -838,13 +821,6 @@ async function reconnectFluencyRecognition(){
     return false;
   }
   if(fluencyListening) return true;
-  const btn = $('fluencyReconnectBtn');
-  if(btn) btn.style.display = 'none';
-
-  if(!getLiveFluencyAudioTrack()){
-    const ok = await requestFluencyMic();
-    if(!ok) return false;
-  }
   return restartFluencyRecognitionAfterSilence();
 }
 
@@ -891,7 +867,7 @@ function addManualFluencyWord(){
   syncFluencyWords();
 }
 
-/* 기존 타이머에 음성인식을 연결 *//* 기존 타이머에 음성인식을 연결 */
+/* 기존 타이머에 음성인식을 연결 */
 async function startTimer(){
   // 버튼을 누른 사용자 제스처 안에서 권한을 요청해야 Android Chrome에서 가장 안정적입니다.
   if('speechSynthesis' in window) speechSynthesis.cancel();
@@ -906,9 +882,9 @@ async function startTimer(){
     return;
   }
 
-  // 별도의 마이크 테스트 없이 1분 시작에서 마이크를 열고,
-  // 검사 종료까지 같은 MediaStream을 유지합니다.
-  if(!getLiveFluencyAudioTrack()){
+  // 별도의 마이크 테스트 없이 1분 시작에서 권한을 확인합니다.
+  // 실제 청취는 Web Speech API가 직접 마이크를 열고, 침묵 종료 시 자동 재시작합니다.
+  if(!fluencyMicReady){
     const allowed = await requestFluencyMic();
     if(!allowed) return;
   }
