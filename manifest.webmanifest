@@ -1,9 +1,9 @@
 {
-  "name": "CIST 인지검사 도우미",
-  "short_name": "CIST 도우미",
-  "start_url": "./",
-  "display": "standalone",
-  "background_color": "#eef7f5",
-  "theme_color": "#12665f",
-  "lang": "ko-KR"
+  "name":"CIST 인지검사 도우미",
+  "short_name":"CIST 도우미",
+  "start_url":"./",
+  "display":"standalone",
+  "background_color":"#eef7f5",
+  "theme_color":"#12665f",
+  "lang":"ko-KR"
 }

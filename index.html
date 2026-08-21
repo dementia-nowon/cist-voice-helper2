@@ -318,7 +318,7 @@ let fluencyFinalText = '';
 let fluencyMicStream = null;
 let fluencyMicReady = false;
 
-async function requestFluencyMic(){
+async async function requestFluencyMic(){
   const live = $('fluencyLive');
   const mic = $('fluencyMicState');
 
@@ -376,7 +376,7 @@ function stopFluencyMic(){
 async function testFluencyMicrophone(){
   const ok = await requestFluencyMic();
   if(ok){
-    setFluencyLive('🟢 마이크 정상입니다. 이제 반드시 「1분 시작」 버튼을 눌러 음성인식을 시작하세요.', '🟢 마이크 정상');
+    setFluencyLive('🟢 마이크 정상입니다. 이제 「1분 시작」을 한 번 눌러 음성인식을 시작하세요.', '🟢 마이크 정상');
   }
   return ok;
 }
@@ -515,16 +515,18 @@ function createFluencyRecognition(){
 function startFluencyRecognition(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR){
-    setFluencyLive('이 태블릿/브라우저에서는 SpeechRecognition을 지원하지 않습니다. Chrome으로 다시 시도해 주세요.', '⚠️ 음성인식 미지원');
+    setFluencyLive('이 갤럭시탭 Chrome에서 웹 음성인식을 지원하지 않습니다. Chrome 최신 버전으로 다시 시도해 주세요.', '⚠️ 음성인식 미지원');
     return false;
   }
+
   if(!fluencyRecognition) fluencyRecognition = createFluencyRecognition();
+
   try{
     fluencyRecognition.lang = 'ko-KR';
     fluencyRecognition.continuous = true;
     fluencyRecognition.interimResults = true;
     fluencyRecognition.maxAlternatives = 3;
-    fluencyRecognition.start();
+    fluencyRecognition.start(); // direct call from button tap
     return true;
   }catch(e){
     setFluencyLive('음성인식 시작 실패: ' + (e.message || e.name || '알 수 없는 오류'), '⚠️ 시작 실패');
@@ -565,32 +567,23 @@ function addManualFluencyWord(){
 
 /* 기존 타이머에 음성인식을 연결 */
 async function startTimer(){
-  // 중요: 여기서 stopVoice()를 호출하면 갤럭시탭에서 이미 허용된
-  // 마이크 스트림을 다시 종료하여 fluencyMicReady가 false로 돌아갑니다.
-  // 따라서 1분 시작 버튼에서는 음성 안내만 중지하고 마이크는 유지합니다.
-  if('speechSynthesis' in window) speechSynthesis.cancel();
-
-  // SpeechRecognition.start() must be invoked directly from the user's tap.
+  // Do NOT request microphone permission here. The browser can reject
+  // SpeechRecognition if start() is not called directly from the tap.
+  // The separate microphone test handles getUserMedia permission.
   if(!fluencyMicReady){
-    resetFluencyData();
-    timerSeconds = 60;
-    updateTimer();
-    const micOK = await requestFluencyMic();
-    if(micOK){
-      setFluencyLive('🟢 마이크 권한이 확인되었습니다. 이제 다시 「1분 시작」을 눌러주세요.', '🟢 준비 완료');
-    }
+    setFluencyLive('먼저 「🎤 마이크 테스트」를 눌러 마이크가 정상인지 확인해 주세요.', '⚠️ 마이크 테스트 필요');
     return;
   }
 
+  if('speechSynthesis' in window) speechSynthesis.cancel();
+
   stopFluencyRecognition();
-  if(timerSeconds <= 0 || timerSeconds === 60) timerSeconds = 60;
+  timerSeconds = 60;
   updateTimer();
   resetFluencyData();
 
   const recognitionOK = startFluencyRecognition();
-  if(!recognitionOK){
-    setFluencyLive('마이크는 정상이나 음성인식을 시작하지 못했습니다. 화면의 오류 메시지를 확인해 주세요.', '⚠️ 음성인식 시작 실패');
-  }
+  if(!recognitionOK) return;
 
   timerInterval = setInterval(() => {
     timerSeconds--;

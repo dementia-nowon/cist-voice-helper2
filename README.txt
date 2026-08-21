@@ -1,9 +1,19 @@
-CIST 갤럭시탭 음성인식 v3
+CIST 갤럭시탭 음성인식 v4 - GitHub Pages 업로드용
 
-이번 수정:
-- 마이크 권한 확인 후 1분 시작을 눌렀을 때 권한 확인 메시지가 반복되는 문제 수정
-- 시작 버튼에서 stopVoice()가 마이크를 종료하던 문제 제거
-- 음성인식 시작/오디오 수신/소리 감지/음성 감지 상태 표시
-- 1분 동안 SpeechRecognition이 종료되면 자동 재시작
+v4 핵심 수정:
+- v3의 JavaScript 문법 오류 수정 (await 함수 선언)
+- 1분 시작 버튼에서 마이크 권한 요청을 완전히 제거
+- 마이크 테스트에서 권한을 먼저 받고, 1분 시작은 SpeechRecognition.start()만 직접 실행
+- 음성인식 종료 시 1분 동안 자동 재시작
+- 상태/오류 메시지 표시
 
-GitHub Pages의 저장소 최상위(root)에 index.html을 교체 업로드하세요.
+업로드:
+GitHub 저장소 root의 기존 index.html을 이 index.html로 교체하세요.
+manifest.webmanifest도 교체하세요.
+README.txt는 선택 사항입니다.
+
+테스트:
+1. HTTPS GitHub Pages + Chrome
+2. 🎤 마이크 테스트 → 🟢 마이크 정상
+3. ▶ 1분 시작을 한 번 누름
+4. "사과"라고 말함
