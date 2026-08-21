@@ -11,6 +11,32 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <title>인지검사 도우미 · 모바일 음성인식 보정</title>
+  <script>
+  // v7: 이전 PWA/Service Worker가 오래된 SpeechRecognition 버전을 계속 실행하는 문제 방지.
+  // 이 빌드에서 한 번만 기존 SW와 Cache Storage를 정리합니다.
+  (function(){
+    const BUILD='fluency-recorder-v7-20260821';
+    window.__FLUENCY_BUILD__=BUILD;
+    window.addEventListener('load', async ()=>{
+      try{
+        const done=localStorage.getItem('fluency-cache-purge-build');
+        const regs=('serviceWorker' in navigator) ? await navigator.serviceWorker.getRegistrations() : [];
+        for(const reg of regs){ try{ await reg.unregister(); }catch(_){} }
+        if(done!==BUILD && 'caches' in window){
+          const keys=await caches.keys();
+          await Promise.all(keys.map(k=>caches.delete(k).catch(()=>false)));
+          localStorage.setItem('fluency-cache-purge-build',BUILD);
+        }
+        if(navigator.serviceWorker?.controller && sessionStorage.getItem('fluency-sw-reload')!==BUILD){
+          sessionStorage.setItem('fluency-sw-reload',BUILD);
+          const u=new URL(location.href);
+          u.searchParams.set('_build',BUILD);
+          location.replace(u.toString());
+        }
+      }catch(e){ console.warn('legacy cache cleanup failed',e); }
+    }, {once:true});
+  })();
+  </script>
   <style>
     :root{--p:#176b66;--p2:#238b82;--bg:#eef7f5;--card:#fff;--text:#173b38;--muted:#6a7f7c;--line:#dceae8}
     *{box-sizing:border-box}
@@ -323,7 +349,7 @@ function render(autoSpeak=true){
           <button class="secondary" onclick="addManualFluencyWord()">+ 정답 보정</button>
         </div>
         <div class="fluency-model-note" id="fluencyModelNote">처음 사용할 때 브라우저용 다국어 Whisper 모델을 내려받습니다. 정확도를 우선해 Whisper Base를 사용하고, 기기에서 실행이 어려우면 자동으로 가벼운 모델로 전환합니다. 이후에는 브라우저 캐시를 사용하며 API 키가 필요하지 않습니다.</div>
-        <div class="fluency-help"><b>검사 중에는 SpeechRecognition을 사용하지 않습니다.</b> 마이크를 한 번만 열어 60초 연속 녹음하므로 침묵 때문에 연결이 끊기거나 재연결 띵 소리가 반복되지 않습니다. 1분 종료 후 말소리 구간을 찾아 음성→텍스트로 바꾸고 정답/오답을 한꺼번에 분류합니다.</div>
+        <div class="fluency-help"><b>연속녹음 v7 · 검사 중 SpeechRecognition 미사용</b><br>마이크를 딱 한 번 열고 60초 후 한 번만 닫습니다. 이전 PWA/Service Worker 캐시는 자동 정리합니다. 이 문구가 보이면 새 녹음 방식이 적용된 것입니다.</div>
       </div>`;
   } else {
     $('content').innerHTML = `<div class="figure-note">${page.display}</div>`;
@@ -366,6 +392,7 @@ let fluencyFinishing = false;
 let fluencyTranscriber = null;
 let fluencyTranscriberPromise = null;
 let fluencyModelDevice = '';
+let fluencyPromptIds = undefined;
 
 function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
 function fluencyBrowserInfo(){
@@ -501,18 +528,8 @@ async function createFluencyTranscriber(){
   }
   const opts={progress_callback:updateModelProgress};
 
-  // Accuracy first: Whisper Base multilingual. On WebGPU use fp16 to reduce GPU memory.
-  // If WebGPU/Base fails, fall back to q8 WASM. As a last resort use Whisper Tiny q8.
-  if(navigator.gpu){
-    try{
-      fluencyModelDevice='Whisper Base · WebGPU';
-      return await mod.pipeline('automatic-speech-recognition','onnx-community/whisper-base',{
-        ...opts, device:'webgpu', dtype:'fp16'
-      });
-    }catch(err){
-      console.warn('Whisper Base WebGPU load failed; falling back to WASM q8',err);
-    }
-  }
+  // Android에서 정확도/안정성을 우선해 Whisper Base WASM q8을 먼저 사용합니다.
+  // WebGPU fp16은 기기별 정밀도 차이가 있어 이 검사에서는 우선 사용하지 않습니다.
   try{
     fluencyModelDevice='Whisper Base · WASM q8';
     return await mod.pipeline('automatic-speech-recognition','onnx-community/whisper-base',{
@@ -572,11 +589,11 @@ function detectFluencySpeechSegments(audio,sampleRate=16000){
   const noise=sorted[Math.floor(sorted.length*.20)]||0;
   const peak=sorted[Math.max(0,Math.floor(sorted.length*.97)-1)]||0;
   // Low floor is intentional: elderly speakers and one-syllable answers can be quiet.
-  const threshold=Math.max(0.0035, noise*2.5, peak*0.035);
-  const release=Math.max(0.0028,threshold*.58);
-  const preFrames=Math.round(280/frameMs);
-  const postFrames=Math.round(420/frameMs);
-  const maxGapFrames=Math.round(320/frameMs);
+  const threshold=Math.max(0.0018, noise*1.9, peak*0.022);
+  const release=Math.max(0.0013,threshold*.52);
+  const preFrames=Math.round(420/frameMs);
+  const postFrames=Math.round(720/frameMs);
+  const maxGapFrames=Math.round(420/frameMs);
   let inSpeech=false,startFrame=0,lastHot=-1,gap=0;
   const raw=[];
   for(let i=0;i<rms.length;i++){
@@ -598,7 +615,7 @@ function detectFluencySpeechSegments(audio,sampleRate=16000){
   }
   // Merge nearby answers so "사과 배 포도" is seen with context, but keep long pauses separate.
   const merged=[];
-  const mergeGapFrames=Math.round(1100/frameMs);
+  const mergeGapFrames=Math.round(850/frameMs);
   for(const seg of raw){
     const prev=merged[merged.length-1];
     if(prev && seg[0]-prev[1]<=mergeGapFrames) prev[1]=seg[1];
@@ -624,12 +641,12 @@ function detectFluencySpeechSegments(audio,sampleRate=16000){
   }
   return result;
 }
-function makeWhisperSegment(audio,startSample,endSample,sampleRate=16000){
-  // Add silence around short utterances. Whisper handles one-syllable Korean words
-  // more reliably when the clip is not only a few hundred milliseconds long.
-  const pad=Math.round(.42*sampleRate);
+function makeWhisperSegment(audio,startSample,endSample,sampleRate=16000,padSeconds=.65,minSeconds=2.2){
+  // 한 음절(무/배/감/파 등)은 너무 짧은 클립에서 Whisper가 공백으로 내보내기 쉬워
+  // 앞뒤에 충분한 무음을 붙여 최소 길이를 확보합니다.
+  const pad=Math.round(padSeconds*sampleRate);
   const body=audio.subarray(Math.max(0,startSample),Math.min(audio.length,endSample));
-  const minTotal=Math.round(1.25*sampleRate);
+  const minTotal=Math.round(minSeconds*sampleRate);
   const total=Math.max(body.length+pad*2,minTotal);
   const out=new Float32Array(total);
   const offset=Math.floor((total-body.length)/2);
@@ -642,12 +659,29 @@ function normalizeWhisperText(text){
     .replace(/\s+/g,' ')
     .trim();
 }
-async function runWhisperOnce(transcriber,audio){
-  const output=await transcriber(audio,{
-    language:'korean',
-    task:'transcribe',
-    return_timestamps:false
-  });
+function getFluencyPromptIds(transcriber){
+  if(fluencyPromptIds!==undefined) return fluencyPromptIds||undefined;
+  try{
+    const tokenizer=transcriber?.tokenizer;
+    if(tokenizer && typeof tokenizer.get_prompt_ids==='function'){
+      const prompt='과일과 채소 이름을 대답합니다. 무, 배, 감, 파, 콩, 귤, 사과, 포도, 수박, 참외, 감자, 고구마, 양파, 배추, 양배추, 콩나물, 오이, 가지, 호박, 토마토.';
+      fluencyPromptIds=tokenizer.get_prompt_ids(prompt);
+      return fluencyPromptIds;
+    }
+  }catch(err){ console.warn('Whisper prompt preparation failed',err); }
+  fluencyPromptIds=null;
+  return undefined;
+}
+function transcriptHasKnownAnswer(text){
+  return analyzeFluencyTranscript(text).words.length>0;
+}
+async function runWhisperOnce(transcriber,audio,useVocabularyPrompt=false){
+  const opts={language:'korean',task:'transcribe',return_timestamps:false,do_sample:false};
+  if(useVocabularyPrompt){
+    const promptIds=getFluencyPromptIds(transcriber);
+    if(promptIds) opts.prompt_ids=promptIds;
+  }
+  const output=await transcriber(audio,opts);
   return normalizeWhisperText(output?.text||'');
 }
 async function transcribeFluencyRecording(blob){
@@ -665,15 +699,21 @@ async function transcribeFluencyRecording(blob){
   const texts=[];
   for(let i=0;i<segments.length;i++){
     const seg=segments[i];
-    const clip=makeWhisperSegment(audio,seg.startSample,seg.endSample,16000);
-    setFluencyLive(`🧠 말한 구간을 분석하고 있습니다. ${i+1} / ${segments.length}<br><small>무·배·감·파 같은 짧은 답변도 별도 구간으로 보존합니다.</small>`,'🧠 음성 분석 중');
+    const speechSeconds=Math.max(0,seg.endSec-seg.startSec);
+    const clip=makeWhisperSegment(audio,seg.startSample,seg.endSample,16000,.65,2.2);
+    setFluencyLive(`🧠 말한 구간을 분석하고 있습니다. ${i+1} / ${segments.length}<br><small>한 글자 답변은 짧은 발화 전용 보조 인식도 사용합니다.</small>`,'🧠 음성 분석 중');
     try{
-      const text=await runWhisperOnce(transcriber,clip);
+      let text=await runWhisperOnce(transcriber,clip,false);
+      // 2초 이하의 짧은 발화가 비었거나 단어가 잘 안 잡힌 경우에만 보조 인식합니다.
+      if(speechSeconds<=2.0 && (!text || text.replace(/\s/g,'').length<=1 || !transcriptHasKnownAnswer(text))){
+        const retryClip=makeWhisperSegment(audio,seg.startSample,seg.endSample,16000,1.0,3.4);
+        const retry=await runWhisperOnce(transcriber,retryClip,true);
+        if(!text || transcriptHasKnownAnswer(retry)) text=retry||text;
+      }
       if(text) texts.push(text);
     }catch(err){
       console.warn('Whisper segment failed',i,err);
     }
-    // Give Android UI a chance to repaint between inference calls.
     await sleep(20);
   }
 
@@ -686,7 +726,7 @@ async function transcribeFluencyRecording(blob){
   return combined;
 }
 function startMediaRecorder(stream){
-  fluencyRecordingChunks=[]; fluencyRecordingBlob=null; const mime=chooseRecordingMimeType(),options=mime?{mimeType:mime,audioBitsPerSecond:64000}:{audioBitsPerSecond:64000},recorder=new MediaRecorder(stream,options); fluencyRecorder=recorder; recorder.ondataavailable=e=>{if(e.data&&e.data.size) fluencyRecordingChunks.push(e.data)}; recorder.onerror=e=>{console.error('MediaRecorder error',e);setFluencyLive('⚠️ 녹음 중 오류가 발생했습니다. 정지 후 다시 시도해 주세요.','⚠️ 녹음 오류')}; recorder.start(1000); fluencyRecordingStartedAt=Date.now(); return recorder;
+  fluencyRecordingChunks=[]; fluencyRecordingBlob=null; const mime=chooseRecordingMimeType(),options=mime?{mimeType:mime,audioBitsPerSecond:96000}:{audioBitsPerSecond:96000},recorder=new MediaRecorder(stream,options); fluencyRecorder=recorder; recorder.ondataavailable=e=>{if(e.data&&e.data.size) fluencyRecordingChunks.push(e.data)}; recorder.onerror=e=>{console.error('MediaRecorder error',e);setFluencyLive('⚠️ 녹음 중 오류가 발생했습니다. 정지 후 다시 시도해 주세요.','⚠️ 녹음 오류')}; recorder.start(); fluencyRecordingStartedAt=Date.now(); return recorder;
 }
 function stopMediaRecorderAndGetBlob(){
   return new Promise((resolve,reject)=>{ const recorder=fluencyRecorder; if(!recorder){resolve(fluencyRecordingBlob);return} const finalize=()=>{try{const type=recorder.mimeType||fluencyRecordingChunks[0]?.type||'audio/webm',blob=new Blob(fluencyRecordingChunks,{type});fluencyRecordingBlob=blob;fluencyRecorder=null;resolve(blob)}catch(err){reject(err)}}; if(recorder.state==='inactive'){finalize();return} recorder.onstop=finalize; try{recorder.stop()}catch(err){reject(err)} });
@@ -698,7 +738,7 @@ function resetFluencyData(){
 async function startTimer(){
   if(fluencyFinishing) return; if('speechSynthesis' in window) speechSynthesis.cancel(); if(timerInterval||fluencyRecorder?.state==='recording') await resetTimer(); if(!window.isSecureContext){setFluencyLive('🔒 GitHub Pages의 https:// 주소로 접속해야 마이크를 사용할 수 있습니다.','🔒 HTTPS 필요');return} resetFluencyData(); const stream=await openFluencyMicForRecording(); if(!stream) return;
   try{startMediaRecorder(stream)}catch(err){stopFluencyMic();setFluencyLive('⚠️ 연속 녹음을 시작하지 못했습니다: '+escapeHTML(err?.message||err?.name||'unknown'),'⚠️ 녹음 시작 실패');return}
-  timerSeconds=60;updateTimer();setFluencyLive('<span class="fluency-recording-dot"></span><b>60초 연속 녹음 중입니다.</b> 중간에 쉬어도 마이크는 계속 켜져 있습니다.','🔴 녹음 중'); if($('fluencyRawText')) $('fluencyRawText').textContent='📝 지금은 녹음만 합니다. 정답/오답 판정과 음성인식은 1분 종료 후 실행합니다.'; preloadFluencyTranscriber().catch(err=>console.warn('Whisper preload failed',err)); timerInterval=setInterval(()=>{timerSeconds--;updateTimer();if(timerSeconds<=0) finishFluencyTest(true)},1000);
+  timerSeconds=60;updateTimer();setFluencyLive('<span class="fluency-recording-dot"></span><b>60초 연속 녹음 중입니다.</b> 중간에 쉬어도 마이크는 계속 켜져 있습니다.','🔴 녹음 중'); if($('fluencyRawText')) $('fluencyRawText').textContent='📝 지금은 녹음만 합니다. 정답/오답 판정과 음성인식은 1분 종료 후 실행합니다.'; timerInterval=setInterval(()=>{timerSeconds--;updateTimer();if(timerSeconds<=0) finishFluencyTest(true)},1000);
 }
 async function finishFluencyTest(announce=true){
   if(fluencyFinishing) return; const hasRecording=!!fluencyRecorder||!!fluencyRecordingBlob; if(!hasRecording&&!timerInterval) return; fluencyFinishing=true; if(timerInterval){clearInterval(timerInterval);timerInterval=null} timerSeconds=Math.max(0,timerSeconds);updateTimer();setFluencyLive('⏹ 녹음을 종료하고 있습니다.','⏹ 녹음 종료'); let blob=null; try{blob=await stopMediaRecorderAndGetBlob()}catch(err){console.error(err)}finally{stopFluencyMic()}
@@ -1113,19 +1153,7 @@ function updateNetworkState(){ $('offlineBadge').classList.toggle('show', !navig
 window.addEventListener('online', updateNetworkState);
 window.addEventListener('offline', updateNetworkState);
 updateNetworkState();
-// GitHub Pages에서 이전 service worker가 오래된 index.html을 캐시하면
-// 수정한 음성인식 코드가 태블릿에 반영되지 않을 수 있습니다.
-// 이 버전은 온라인 사용을 우선하여 기존 등록을 해제합니다.
-if('serviceWorker' in navigator){
-  window.addEventListener('load', async () => {
-    try{
-      const regs = await navigator.serviceWorker.getRegistrations();
-      for(const reg of regs){
-        if(reg.scope && location.href.startsWith(reg.scope)) await reg.unregister();
-      }
-    }catch(e){}
-  });
-}
+// v7: service worker를 새로 등록하지 않습니다. 상단 코드가 과거 등록/캐시를 한 번 정리합니다.
 
 loadVoiceSettings();
 loadVoices();
