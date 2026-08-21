@@ -323,7 +323,7 @@ async function requestFluencyMic(){
   const mic = $('fluencyMicState');
 
   if(!window.isSecureContext){
-    if(live) live.innerHTML = '🔒 <b>보안 연결이 필요합니다.</b><br>갤럭시탭에서 이 HTML 파일을 직접 여는 방식은 마이크 권한이 제한될 수 있습니다. HTTPS 웹주소로 열어 주세요.';
+    if(live) live.innerHTML = '🔒 <b>보안 연결이 필요합니다.</b><br>갤럭시탭에서는 HTTPS 웹주소로 열어 주세요.';
     if(mic) mic.textContent = '🔒 HTTPS 필요';
     return false;
   }
@@ -338,10 +338,13 @@ async function requestFluencyMic(){
       fluencyMicStream.getTracks().forEach(t=>t.stop());
       fluencyMicStream = null;
     }
+
     if(mic) mic.textContent = '🎤 권한 확인 중';
     if(live) live.textContent = '마이크 사용 권한을 확인하고 있습니다.';
 
-    fluencyMicStream = await navigator.mediaDevices.getUserMedia({
+    // Permission check only. Immediately release the MediaStream so it does
+    // not compete with SpeechRecognition for the tablet microphone.
+    const testStream = await navigator.mediaDevices.getUserMedia({
       audio:{
         echoCancellation:true,
         noiseSuppression:true,
@@ -349,14 +352,21 @@ async function requestFluencyMic(){
       }
     });
 
+    testStream.getTracks().forEach(t=>t.stop());
+
+    // Permission was granted. Keep this flag true; the browser remembers the
+    // permission for this HTTPS origin.
     fluencyMicReady = true;
-    if(mic) mic.textContent = '🟢 마이크 정상';
-    if(live) live.textContent = '마이크가 정상적으로 연결되었습니다. 이제 어르신께 말씀해 달라고 안내해 주세요.';
+    fluencyMicStream = null;
+
+    if(mic) mic.textContent = '🟢 마이크 권한 정상';
+    if(live) live.textContent = '🟢 마이크 권한이 확인되었습니다. 이제 「1분 시작」을 눌러 주세요.';
     return true;
   }catch(err){
     fluencyMicReady = false;
+    fluencyMicStream = null;
     let msg = '마이크 사용 권한을 허용해 주세요.';
-    if(err && err.name === 'NotAllowedError') msg = '마이크 권한이 차단되어 있습니다. 갤럭시탭 설정에서 브라우저의 마이크 권한을 허용해 주세요.';
+    if(err && err.name === 'NotAllowedError') msg = '마이크 권한이 차단되어 있습니다. 갤럭시탭 설정에서 Chrome의 마이크 권한을 허용해 주세요.';
     else if(err && err.name === 'NotFoundError') msg = '사용할 수 있는 마이크를 찾지 못했습니다.';
     else if(err && err.name === 'SecurityError') msg = '보안 정책 때문에 마이크에 접근할 수 없습니다. HTTPS 주소로 열어 주세요.';
     if(live) live.innerHTML = '⚠️ <b>' + msg + '</b>';
@@ -370,7 +380,8 @@ function stopFluencyMic(){
     fluencyMicStream.getTracks().forEach(t=>t.stop());
     fluencyMicStream = null;
   }
-  fluencyMicReady = false;
+  // Do not clear fluencyMicReady: this flag means the user has granted
+  // microphone permission for this HTTPS page.
 }
 
 async function testFluencyMicrophone(){
@@ -474,6 +485,10 @@ function createFluencyRecognition(){
     } else if(finalText) {
       $('fluencyLive').textContent = '최근 인식: ' + finalText.trim();
     }
+    const raw = $('fluencyRawText');
+    if(raw && (interim || finalText)){
+      raw.textContent = '📝 음성인식 원문: ' + (finalText || interim).trim();
+    }
   };
 
   r.onerror = (event) => {
@@ -567,8 +582,8 @@ function startTimer(){
     timerInterval=null;
   }
 
-  if(!fluencyMicReady || !fluencyMicStream){
-    setFluencyLive('먼저 「🎤 마이크 테스트」를 눌러 마이크를 연결해 주세요.', '⚠️ 마이크 테스트 필요');
+  if(!fluencyMicReady){
+    setFluencyLive('먼저 「🎤 마이크 테스트」를 눌러 마이크 권한을 확인해 주세요.', '⚠️ 마이크 테스트 필요');
     return;
   }
 
