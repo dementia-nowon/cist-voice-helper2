@@ -314,7 +314,10 @@ function updateTimer(){
 let fluencyRecognition = null;
 let fluencyListening = false;
 let fluencyWords = new Set();
+let fluencyAutoWords = new Set();
+let fluencyManualWords = new Set();
 let fluencyFinalText = '';
+let fluencyInterimText = '';
 let fluencyMicStream = null;
 let fluencyMicReady = false;
 let fluencyRestartTimer = null;
@@ -457,35 +460,28 @@ function renderFluencyWords(){
   box.innerHTML = [...fluencyWords].map(w => `<span class="fluency-chip">${escapeHTML(w)}</span>`).join('');
 }
 
-function addFluencyWord(word){
-  const w = String(word || '').trim();
-  if(!w || !FLUENCY_VOCAB_SET.has(w)) return false;
-  const before = fluencyWords.size;
-  fluencyWords.add(w);
-  if(fluencyWords.size !== before) renderFluencyWords();
-  return fluencyWords.size !== before;
+function syncFluencyWords(){
+  fluencyWords = new Set([...fluencyAutoWords, ...fluencyManualWords]);
+  renderFluencyWords();
 }
 
-// 한 글자 채소/과일(배, 감, 무, 파, 콩 등)은 다른 단어 내부에서 잡히지 않게
-// 독립된 발화일 때만 후보로 인정합니다. 예: '배추'에서 '배'를 추가하지 않음.
+function addFluencyWord(word, source='auto'){
+  const w = String(word || '').trim();
+  if(!w || !FLUENCY_VOCAB_SET.has(w)) return false;
+  const target = source === 'manual' ? fluencyManualWords : fluencyAutoWords;
+  const before = target.size;
+  target.add(w);
+  if(target.size !== before) syncFluencyWords();
+  return target.size !== before;
+}
+
+// 모든 길이의 후보를 먼저 수집한 다음 longest-match 단계에서 긴 단어가
+// 짧은 단어를 덮도록 합니다. 한 글자 단어도 후보로 두어
+// '사과배', '배사과', '사과배포도'처럼 붙여 말한 발화를 분리합니다.
 function findFluencyOccurrences(normalized, alias){
   const a = normalizeFluencyText(alias);
   if(!a) return [];
   const hits = [];
-  const compactLen = a.replace(/\s/g,'').length;
-
-  if(compactLen === 1 && !a.includes(' ')){
-    const suffix = '(?:요|이요|예요|이에요|입니다)?';
-    const re = new RegExp(`(^|\\s)(${escapeRegExp(a)})${suffix}(?=\\s|$)`, 'g');
-    let m;
-    while((m = re.exec(normalized))){
-      const start = m.index + m[1].length;
-      hits.push({start, end:start+a.length, alias:a});
-      if(re.lastIndex === m.index) re.lastIndex++;
-    }
-    return hits;
-  }
-
   let from = 0;
   while(from < normalized.length){
     const idx = normalized.indexOf(a, from);
@@ -496,7 +492,7 @@ function findFluencyOccurrences(normalized, alias){
   return hits;
 }
 
-// 가장 긴 단어부터 자리를 차지하게 하여 부분단어의 중복 오검출을 차단합니다.
+// 가장 긴 단어부터 자리를 차지하게 하여 부분단어의 중복 오검출을 차단합니다.// 가장 긴 단어부터 자리를 차지하게 하여 부분단어의 중복 오검출을 차단합니다.
 // 예: 콩나물→콩나물만, 완두콩→완두콩만, 양배추→양배추만,
 //     애호박→애호박만, 방울토마토→방울토마토만 기록됩니다.
 function analyzeFluencyTranscript(text){
@@ -543,21 +539,43 @@ function analyzeFluencyTranscript(text){
   }
 
   selected.sort((a,b)=>a.start-b.start || b.matchLen-a.matchLen);
+
+  // '감사합니다'의 '감', '파란색'의 '파' 같은 한 글자 오검출은 막되,
+  // '사과배'처럼 다른 정상 과일·채소와 바로 붙어 말한 한 글자 단어는 인정합니다.
+  const filtered = selected.filter((item, idx, arr) => {
+    if(item.matchLen !== 1) return true;
+    const leftBoundary = item.start === 0 || /\s/.test(normalized[item.start-1] || '');
+    const rightBoundary = item.end === normalized.length || /\s/.test(normalized[item.end] || '');
+    if(leftBoundary && rightBoundary) return true;
+    const prev = arr[idx-1];
+    const next = arr[idx+1];
+    const touchesPrev = !!prev && prev.end === item.start;
+    const touchesNext = !!next && item.end === next.start;
+    return touchesPrev || touchesNext;
+  });
+
   return {
     text:String(text || '').trim(),
     normalized,
-    words:selected.map(x=>x.word),
-    matchedChars:selected.reduce((sum,x)=>sum+x.matchLen,0)
+    words:filtered.map(x=>x.word),
+    matchedChars:filtered.reduce((sum,x)=>sum+x.matchLen,0)
   };
 }
 
 function extractFluencyWords(text){
   const analysis = analyzeFluencyTranscript(text);
-  analysis.words.forEach(addFluencyWord);
+  analysis.words.forEach(w=>addFluencyWord(w, 'auto'));
   return analysis;
 }
 
-// SpeechRecognition의 여러 후보를 모두 합치면 오인식 단어까지 추가될 수 있으므로
+function rebuildAutoFluencyWords(){
+  const analysis = analyzeFluencyTranscript(fluencyFinalText);
+  fluencyAutoWords = new Set(analysis.words);
+  syncFluencyWords();
+  return analysis;
+}
+
+// SpeechRecognition의 여러 후보를 모두 합치면 오인식 단어까지 추가될 수 있으므로// SpeechRecognition의 여러 후보를 모두 합치면 오인식 단어까지 추가될 수 있으므로
 // 후보별로 분석한 뒤 과일·채소를 가장 설득력 있게 잡은 한 후보만 채점합니다.
 function chooseBestFluencyAlternative(result){
   const analyses = [];
@@ -591,9 +609,9 @@ function createFluencyRecognition(){
   if(!SR) return null;
   const r = new SR();
   r.lang = 'ko-KR';
-  // Android Chrome에서 continuous=true가 장시간 멈추는 경우가 있어
-  // 짧은 세션을 자동 재시작하는 방식이 더 안정적입니다.
-  r.continuous = false;
+  // 연속 발화를 한 세션에서 계속 받습니다. 매 단어마다 인식 세션을
+  // 재시작하면 Android/Chrome에서 시스템 효과음이 반복되고 발화가 잘릴 수 있습니다.
+  r.continuous = true;
   r.interimResults = true;
   r.maxAlternatives = 3;
 
@@ -611,23 +629,47 @@ function createFluencyRecognition(){
       if(result.isFinal){
         const chosen = chooseBestFluencyAlternative(result);
         if(chosen.text) acceptedFinals.push(chosen.text);
-        chosen.words.forEach(addFluencyWord);
       } else {
         interim += (result[0]?.transcript || '') + ' ';
       }
     }
 
-    const finalText = acceptedFinals.join(' ').trim();
-    if(finalText) fluencyFinalText += finalText + ' ';
+    let finalText = acceptedFinals.join(' ').trim();
+    if(finalText && fluencyInterimText){
+      // Android 음성인식이 interim에서는 '콩나물'/'사과배'까지 들었다가
+      // final에서 '콩'/'사과'처럼 뒤를 잘라 확정하는 경우를 보정합니다.
+      const prev = analyzeFluencyTranscript(fluencyInterimText);
+      const fin = analyzeFluencyTranscript(finalText);
+      const prevCompact = prev.normalized.replace(/\s+/g,'');
+      const finCompact = fin.normalized.replace(/\s+/g,'');
+      const isSafePrefixRescue = finCompact && prevCompact.startsWith(finCompact) &&
+        prevCompact.length > finCompact.length && prevCompact.length - finCompact.length <= 5 &&
+        prev.matchedChars > fin.matchedChars && prev.words.length >= fin.words.length;
+      if(isSafePrefixRescue) finalText = fluencyInterimText;
+    }
+
+    if(finalText){
+      fluencyFinalText = (fluencyFinalText + ' ' + finalText).replace(/\s+/g,' ').trim();
+      // 전체 누적 발화를 매번 다시 분석합니다.
+      // 예: 첫 결과 '콩' + 다음 결과 '나물' => 기존 콩을 제거하고 콩나물로 교체.
+      rebuildAutoFluencyWords();
+    }
+
+    fluencyInterimText = interim.trim();
+    const previewText = [fluencyFinalText, fluencyInterimText].filter(Boolean).join(' ');
+    const preview = analyzeFluencyTranscript(previewText);
 
     const live = $('fluencyLive');
     if(live){
-      if(interim.trim()) live.textContent = '인식 중: ' + interim.trim();
-      else if(finalText) live.textContent = '최근 인식: ' + finalText;
+      if(fluencyInterimText){
+        live.textContent = '인식 중: ' + fluencyInterimText + (preview.words.length ? `  → ${preview.words.join(', ')}` : '');
+      } else if(finalText){
+        live.textContent = '최근 인식: ' + finalText;
+      }
     }
     const raw = $('fluencyRawText');
-    if(raw && (interim.trim() || finalText)){
-      raw.textContent = '📝 음성인식 원문: ' + (finalText || interim.trim());
+    if(raw && (fluencyInterimText || finalText)){
+      raw.textContent = '📝 누적 음성인식 원문: ' + previewText;
     }
   };
 
@@ -659,7 +701,7 @@ function createFluencyRecognition(){
             setFluencyLive('음성인식을 다시 시작하는 중입니다…', '🟡 재연결 중');
           }
         }
-      }, 250);
+      }, 600);
     } else {
       setFluencyLive('음성인식이 종료되었습니다.', '⏹ 종료');
     }
@@ -704,7 +746,10 @@ function stopFluencyRecognition(){
 
 function resetFluencyData(){
   fluencyWords = new Set();
+  fluencyAutoWords = new Set();
+  fluencyManualWords = new Set();
   fluencyFinalText = '';
+  fluencyInterimText = '';
   const input = $('fluencyManualInput');
   if(input) input.value = '';
   renderFluencyWords();
@@ -717,16 +762,15 @@ function addManualFluencyWord(){
   const value = input.value.trim();
   if(!value) return;
 
-  // 직접 추가는 검사자가 들은 실제 단어를 기록할 수 있도록 허용합니다.
-  // 단, 공백으로 여러 단어를 입력하면 각각 분리합니다.
+  // 직접 추가는 자동인식 재분석과 분리해 보존합니다.
   value.split(/\s+/).forEach(w => {
-    if(w.length <= 20) fluencyWords.add(w);
+    if(w.length <= 20) fluencyManualWords.add(w);
   });
   input.value = '';
-  renderFluencyWords();
+  syncFluencyWords();
 }
 
-/* 기존 타이머에 음성인식을 연결 */
+/* 기존 타이머에 음성인식을 연결 *//* 기존 타이머에 음성인식을 연결 */
 async function startTimer(){
   // 버튼을 누른 사용자 제스처 안에서 권한을 요청해야 Android Chrome에서 가장 안정적입니다.
   if('speechSynthesis' in window) speechSynthesis.cancel();
